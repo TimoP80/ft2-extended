@@ -55,6 +55,9 @@ If these don't work for you, you'll have to compile the code manually.
 
 ![Example #1](https://16-bits.org/ft2-clone-3.png)
 ![Example #2](https://16-bits.org/ft2-clone-4.png)
+<img width="1903" height="1278" alt="Screenshot 2026-11-17 232216" src="https://github.com/user-attachments/assets/4f1415ab-335a-42d2-ba43-df8ec63820de" />
+
+
 
 # Compiling the code
 Build instructions can be found in the repository (HOW-TO-COMPILE.txt).
