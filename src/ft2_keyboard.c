@@ -1300,11 +1300,10 @@ static bool checkModifiedKeys(SDL_Keycode keycode)
 			}
 			else if (keyb.leftCtrlPressed)
 			{
-#ifdef HAS_MIDI
-				editor.currConfigScreen = 3;
+				editor.currConfigScreen = CONFIG_SCREEN_VST3;
 				showConfigScreen();
-				checkRadioButton(RB_CONFIG_MIDI_INPUT);
-#endif
+				checkRadioButton(RB_CONFIG_VST3);
+
 				return true;
 			}
 		}
@@ -1319,6 +1318,15 @@ static bool checkModifiedKeys(SDL_Keycode keycode)
 				else
 					writeFromMacroSlot(5-1);
 
+				return true;
+			}
+			else if (keyb.leftCtrlPressed)
+			{
+#ifdef HAS_MIDI
+				editor.currConfigScreen = CONFIG_SCREEN_MIDI_INPUT;
+				showConfigScreen();
+				checkRadioButton(RB_CONFIG_MIDI_INPUT);
+#endif
 				return true;
 			}
 		}

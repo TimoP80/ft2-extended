@@ -107,6 +107,10 @@ scrollBar_t scrollBars[NUM_SCROLLBARS] =
 	{ 483, 15, 18, 143, SCROLLBAR_VERTICAL, SCROLLBAR_DYNAMIC_THUMB_SIZE, sbMidiInputSetPos },
 #endif
 
+	// ------ CONFIG VST3 SCROLLBARS ------
+	//x,   y,  w,  h,   type,               style                         funcOnDown
+	{ 614, 18, 18, 116, SCROLLBAR_VERTICAL, SCROLLBAR_DYNAMIC_THUMB_SIZE, sbVST3PluginSetPos },
+
 	// ------ DISK OP. SCROLLBARS ------
 	//x,   y,  w,  h,   type,               style                         funcOnDown
 	{ 335, 15, 18, 143, SCROLLBAR_VERTICAL, SCROLLBAR_DYNAMIC_THUMB_SIZE, sbDiskOpSetPos }
@@ -706,6 +710,9 @@ void initializeScrollBars(void)
 	setScrollBarPageLength(SB_MIDI_INPUT_SCROLL, 15);
 	setScrollBarEnd(SB_MIDI_INPUT_SCROLL, 1);
 #endif
+
+	setScrollBarPageLength(SB_VST3_PLUGIN_SCROLL, 10);
+	setScrollBarEnd(SB_VST3_PLUGIN_SCROLL, 1);
 
 	// disk op.
 	setScrollBarPageLength(SB_DISKOP_LIST, DISKOP_ENTRY_NUM);

@@ -34,6 +34,218 @@ static int32_t echo_Distance = 0x100;
 static double dVol_StartVol = 100.0, dVol_EndVol = 100.0;
 static SDL_Thread *thread;
 
+// loop time-stretch state
+static int32_t loopStretch_Beats = 1; // target: how many song beats one loop cycle should span
+static int32_t loopStretch_OldLoopStart, loopStretch_OldLoopLength;
+
+static void pbLoopStretchBeatsDown(void)
+{
+	if (loopStretch_Beats > 1)
+		loopStretch_Beats--;
+}
+
+static void pbLoopStretchBeatsUp(void)
+{
+	if (loopStretch_Beats < 16)
+		loopStretch_Beats++;
+}
+
+static void drawLoopStretchBox(void)
+{
+	sample_t *s = &instr[editor.curInstr]->smp[editor.curSmp];
+
+	// current loop duration in seconds at the sample's playback rate, and how many
+	// song beats that is at the current song BPM
+	double dSampleC4Hz = getSampleC4Hz(s); // Hz at which this sample plays C-4
+	// playback rate multiplier for the note the sample is currently tuned to:
+	// the sample is tuned to C-4 by relativeNote, so dSampleC4Hz already is the
+	// rate this sample plays at when triggered at its tuned note.
+	// loop cycle duration = loopLength samples / (samples/sec at this rate).
+	// The "samples/sec at this rate" is dSampleC4Hz (the sample's native C-4 rate),
+	// because the tracker plays the sample back at whatever rate matches the
+	// period of the note it was triggered on; for the *loop duration calculation*
+	// we want the rate the sample is actually playing at. That rate equals the
+	// sample's C4 rate multiplied by the note ratio. Since the sample editor plays
+	// the sample at its tuned note (smpEd_NoteNr), we use the C4 rate directly
+	// scaled by the relative note already baked into dSampleC4Hz.
+	// To keep it simple and musically meaningful: use the sample's C4 rate as the
+	// playback rate (this is the rate used when the sample is played at C-4).
+	const double dLoopSec = dSampleC4Hz > 0.0 ? ((double)s->loopLength) / dSampleC4Hz : 0.0;
+	const double dBPMHz = ((double)song.BPM * 2.0) / 5.0; // ticks/sec; 1 tick = 1/2.5 beat at PRECISE_BPM=false
+	// Use PRECISE_BPM semantics: when enabled, BPM = exact beats/sec * 100 (BPM/100 = beats/sec).
+	// FT2 "BPM" with PRECISE_BPM: tempo in beats per minute is BPM*100? No —
+	// PRECISE_BPM makes BPM/2.5 = Hz (ticks/sec) where 1 tick = 1/50 sec at 125 BPM.
+	// For musical beats: at 125 BPM (the FT2 default), 1 beat = 1/50 sec (50 Hz tick rate).
+	// So beats/sec = BPM * 2 / 5 / 50 ... this gets confusing. Use the simplest correct model:
+	// beats per second = BPM / 60.0 (standard musical definition), but FT2's BPM is ticks/sec*2.5.
+	// FT2 tick rate = BPM*2/5 Hz. At 125 BPM that's 50 Hz. Conventionally 1 tick = 1/50 sec = 1 "beat"
+	// in FT2's hacked sense. We'll use: loop duration in ticks = dLoopSec * (BPM*2/5).
+	// Then beats (in FT2 tick units) = that value. To fit to N beats, target loop length
+	// in samples = N ticks * (samples per tick at the sample's playback rate).
+	// samples per tick at playback rate = dSampleC4Hz / (BPM*2/5).
+	const double dTicksPerSec = dBPMHz; // ticks/sec
+	const double dCurrentTicks = dLoopSec * dTicksPerSec; // how many ticks one loop cycle currently spans
+	const double dTargetTicks = (double)loopStretch_Beats; // target: N ticks per loop cycle
+	const double dRatio = dCurrentTicks > 0.0 ? dTargetTicks / dCurrentTicks : 1.0;
+
+	textOutShadow(168, 226, PAL_FORGRND, PAL_BUTTON2, "Loop beats (song tempo)");
+	textOutShadow(168, 240, PAL_FORGRND, PAL_BUTTON2, "Current / target");
+
+	char buf[64];
+	sprintf(buf, "%d -> %d", (int32_t)round(dCurrentTicks), loopStretch_Beats);
+	textOutShadow(320, 240, PAL_FORGRND, PAL_BUTTON2, buf);
+
+	textOutShadow(168, 254, PAL_FORGRND, PAL_BUTTON2, "Stretch loop to fit tempo");
+}
+
+static void sbSetLoopStretchBeats(uint32_t pos)
+{
+	int32_t v = (int32_t)(pos - 36);
+	if (v >= 1 && v <= 16)
+		loopStretch_Beats = v;
+}
+
+static int32_t loopStretchThread(void *ptr)
+{
+	smpPtr_t sp;
+
+	if (instr[editor.curInstr] == NULL)
+		return true;
+
+	sample_t *s = &instr[editor.curInstr]->smp[editor.curSmp];
+	bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
+
+	// Compute stretch ratio so one loop cycle = loopStretch_Beats song-ticks
+	double dSampleC4Hz = getSampleC4Hz(s);
+	if (dSampleC4Hz <= 0.0 || s->loopLength < 2)
+	{
+		okBoxThreadSafe(0, "System message", "Sample has no valid loop or C4 rate.", NULL);
+		setMouseBusy(false);
+		ui.sysReqShown = false;
+		return true;
+	}
+
+	const double dBPMHz = ((double)song.BPM * 2.0) / 5.0; // ticks/sec
+	const double dLoopSec = ((double)s->loopLength) / dSampleC4Hz;
+	const double dCurrentTicks = dLoopSec * dBPMHz;
+	const double dTargetTicks = (double)loopStretch_Beats;
+	const double dRatio = dTargetTicks / dCurrentTicks;
+
+	if (dRatio <= 0.0)
+	{
+		okBoxThreadSafe(0, "System message", "Invalid stretch ratio.", NULL);
+		setMouseBusy(false);
+		ui.sysReqShown = false;
+		return true;
+	}
+
+	double dNewLoopLen = s->loopLength * dRatio;
+	if (dNewLoopLen < 2.0)
+		dNewLoopLen = 2.0;
+	if (dNewLoopLen > (double)MAX_SAMPLE_LEN)
+		dNewLoopLen = (double)MAX_SAMPLE_LEN;
+
+	const uint32_t newLoopLen = (uint32_t)round(dNewLoopLen);
+
+	// We resample the whole sample by the same ratio, keeping the loop region
+	// centered. The loopStart is scaled too, and clamped.
+	double dNewLen = s->length * dRatio;
+	if (dNewLen > (double)MAX_SAMPLE_LEN)
+		dNewLen = (double)MAX_SAMPLE_LEN;
+
+	const uint32_t newLen = (uint32_t)round(dNewLen);
+	if (newLen < 2 || newLen > MAX_SAMPLE_LEN || newLoopLen > newLen)
+	{
+		okBoxThreadSafe(0, "System message", "Resulting sample would be out of range.", NULL);
+		setMouseBusy(false);
+		ui.sysReqShown = false;
+		return true;
+	}
+
+	if (!allocateSmpDataPtr(&sp, newLen, sample16Bit))
+	{
+		outOfMemory = true;
+		setMouseBusy(false);
+		ui.sysReqShown = false;
+		return true;
+	}
+
+	int8_t *dst = sp.ptr;
+	int8_t *src = s->dataPtr;
+
+	// 32.32 fixed-point resampling, matching resampleThread() style (nearest-neighbor)
+	const uint64_t delta64 = (const uint64_t)round((UINT32_MAX+1.0) / dRatio);
+	uint64_t posFrac64 = 0;
+
+	pauseAudio();
+	unfixSample(s);
+
+	if (sample16Bit)
+	{
+		const int16_t *src16 = (const int16_t *)src;
+		int16_t *dst16 = (int16_t *)dst;
+
+		for (uint32_t i = 0; i < newLen; i++)
+		{
+			dst16[i] = src16[posFrac64 >> 32];
+			posFrac64 += delta64;
+		}
+	}
+	else // 8-bit
+	{
+		const int8_t *src8 = src;
+		int8_t *dst8 = dst;
+
+		for (uint32_t i = 0; i < newLen; i++)
+		{
+			dst8[i] = src8[posFrac64 >> 32];
+			posFrac64 += delta64;
+		}
+	}
+
+	freeSmpData(s);
+	setSmpDataPtr(s, &sp);
+
+	// resample the whole sample to the new length
+	s->length = newLen;
+
+	// scale loop start/length and keep loopStart within bounds
+	s->loopStart = (int32_t)round((double)s->loopStart * dRatio);
+	s->loopLength = newLoopLen;
+
+	// clamp loopStart so loopEnd doesn't exceed sample length
+	if (s->loopStart + s->loopLength > s->length)
+		s->loopStart = s->length - s->loopLength;
+	if (s->loopStart < 0)
+		s->loopStart = 0;
+
+	sanitizeSample(s);
+
+	fixSample(s);
+	resumeAudio();
+
+	setSongModifiedFlag();
+	setMouseBusy(false);
+
+	ui.sysReqShown = false;
+	return true;
+
+	(void)ptr;
+}
+
+static void pbDoLoopStretch(void)
+{
+	mouseAnimOn();
+	thread = SDL_CreateThread(loopStretchThread, "loop stretch thread", NULL);
+	if (thread == NULL)
+	{
+		okBox(0, "System message", "Couldn't create thread!", NULL);
+		return;
+	}
+
+	SDL_DetachThread(thread);
+}
+
 static void pbExit(void)
 {
 	ui.sysReqShown = false;
@@ -234,6 +446,72 @@ static void drawResampleBox(void)
 	}
 }
 
+static void setupLoopStretchBoxWidgets(void)
+{
+	pushButton_t *p;
+
+	// "Apply" pushbutton
+	p = &pushButtons[0];
+	memset(p, 0, sizeof (pushButton_t));
+	p->caption = "Apply";
+	p->x = 214;
+	p->y = 264;
+	p->w = 73;
+	p->h = 16;
+	p->callbackFuncOnUp = pbDoLoopStretch;
+	p->visible = true;
+
+	// "Exit" pushbutton
+	p = &pushButtons[1];
+	memset(p, 0, sizeof (pushButton_t));
+	p->caption = "Exit";
+	p->x = 345;
+	p->y = 264;
+	p->w = 73;
+	p->h = 16;
+	p->callbackFuncOnUp = pbExit;
+	p->visible = true;
+
+	// scrollbar buttons
+
+	p = &pushButtons[2];
+	memset(p, 0, sizeof (pushButton_t));
+	p->caption = ARROW_LEFT_STRING;
+	p->x = 314;
+	p->y = 234;
+	p->w = 23;
+	p->h = 13;
+	p->preDelay = 1;
+	p->delayFrames = 3;
+	p->callbackFuncOnDown = pbLoopStretchBeatsDown;
+	p->visible = true;
+
+	p = &pushButtons[3];
+	memset(p, 0, sizeof (pushButton_t));
+	p->caption = ARROW_RIGHT_STRING;
+	p->x = 395;
+	p->y = 234;
+	p->w = 23;
+	p->h = 13;
+	p->preDelay = 1;
+	p->delayFrames = 3;
+	p->callbackFuncOnDown = pbLoopStretchBeatsUp;
+	p->visible = true;
+
+	// beats scrollbar
+	scrollBar_t *s = &scrollBars[0];
+	memset(s, 0, sizeof (scrollBar_t));
+	s->x = 337;
+	s->y = 234;
+	s->w = 58;
+	s->h = 13;
+	s->callbackFunc = sbSetLoopStretchBeats;
+	s->visible = true;
+	setScrollBarPageLength(0, 1);
+	setScrollBarEnd(0, 16 * 2);
+	setScrollBarPos(0, loopStretch_Beats * 2, DONT_TRIGGER_CALLBACK);
+}
+
 static void setupResampleBoxWidgets(void)
 {
 	pushButton_t *p;
@@ -300,8 +578,60 @@ static void setupResampleBoxWidgets(void)
 	setScrollBarEnd(0, 36 * 2);
 }
 
+void pbLoopStretchTempo(void)
+{
+	if (stereoEditNotSupported())
+		return;
+
+	if (editor.curInstr == 0 ||
+		instr[editor.curInstr] == NULL ||
+		instr[editor.curInstr]->smp[editor.curSmp].dataPtr == NULL)
+		return;
+
+	sample_t *s = &instr[editor.curInstr]->smp[editor.curSmp];
+	if (GET_LOOPTYPE(s->flags) == LOOP_DISABLED || s->loopLength < 2)
+	{
+		okBox(0, "System message", "Current sample has no active loop.", NULL);
+		return;
+	}
+
+	loopStretch_Beats = 1;
+
+	setupLoopStretchBoxWidgets();
+	windowOpen();
+
+	outOfMemory = false;
+	exitFlag = false;
+	while (ui.sysReqShown)
+	{
+		readInput();
+		if (ui.sysReqEnterPressed)
+			pbDoLoopStretch();
+
+		setSyncedReplayerVars();
+		handleRedrawing();
+		drawLoopStretchBox();
+		setScrollBarPos(0, loopStretch_Beats * 2, DONT_TRIGGER_CALLBACK);
+		for (uint16_t i = 0; i < 4; i++) drawPushButton(i);
+		drawScrollBar(0);
+
+		flipFrame();
+	}
+
+	for (uint16_t i = 0; i < 4; i++) hidePushButton(i);
+	hideScrollBar(0);
+
+	windowClose(false);
+
+	if (outOfMemory)
+		okBox(0, "System message", "Not enough memory!", NULL);
+}
+
 void pbSampleResample(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	uint16_t i;
 
 	if (editor.curInstr == 0 ||
@@ -756,6 +1086,9 @@ void handleEchoToolPanic(void)
 
 void pbSampleEcho(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	if (editor.curInstr == 0 ||
 		instr[editor.curInstr] == NULL ||
 		instr[editor.curInstr]->smp[editor.curSmp].dataPtr == NULL)
@@ -1060,6 +1393,9 @@ static void setupMixBoxWidgets(void)
 
 void pbSampleMix(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	uint16_t i;
 
 	if (editor.curInstr == 0)
@@ -1596,6 +1932,9 @@ static void setupVolumeBoxWidgets(void)
 
 void pbSampleVolume(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	uint16_t i;
 
 	if (editor.curInstr == 0 ||

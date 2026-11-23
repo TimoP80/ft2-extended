@@ -19,7 +19,7 @@ chmod +x "$BUILDDIR/$LINUXDEPLOY" || exit 1
 
 cat >"$BUILDDIR/ft2-clone.desktop" <<EOF
 [Desktop Entry]
-Name=ft2-clone
+Name=Fasttracker 2 Clone Extended
 Exec=ft2-clone
 Icon=ft2-clone
 Type=Application

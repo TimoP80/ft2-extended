@@ -10,8 +10,8 @@ BEGIN
 	BEGIN
 		BLOCK "040904b0"
 		BEGIN
-			VALUE "FileDescription",  "Fasttracker II clone for Windows"
-			VALUE "ProductName",      "Fasttracker II clone"
+			VALUE "FileDescription",  "Fasttracker 2 Clone Extended for Windows"
+			VALUE "ProductName",      "Fasttracker 2 Clone Extended"
 			VALUE "ProductVersion",   PROG_VER_STR
 #ifdef _WIN64
 			VALUE "InternalName",     "ft2-clone-win64"
@@ -20,7 +20,7 @@ BEGIN
 			VALUE "InternalName",     "ft2-clone-win32"
 			VALUE "OriginalFilename", "ft2-clone-win32.exe"
 #endif
-			VALUE "LegalCopyright",   "Copyright © Olav ""8bitbubsy"" Sørensen"
+			VALUE "LegalCopyright",   "Copyright ï¿½ Olav ""8bitbubsy"" Sï¿½rensen"
 		END
 	END
 

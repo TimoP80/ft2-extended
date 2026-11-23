@@ -15,7 +15,8 @@ enum
 
 	MOD_SAVE_MODE_MOD = 0,
 	MOD_SAVE_MODE_XM = 1,
-	MOD_SAVE_MODE_WAV = 2,
+	MOD_SAVE_MODE_XMV = 2, // XM + VST3 instrument references/presets
+	MOD_SAVE_MODE_WAV = 3,
 	SMP_SAVE_MODE_RAW = 0,
 	SMP_SAVE_MODE_IFF = 1,
 	SMP_SAVE_MODE_WAV = 2
@@ -77,6 +78,7 @@ void rbDiskOpSample(void);
 void rbDiskOpPattern(void);
 void rbDiskOpTrack(void);
 void rbDiskOpModSaveXm(void);
+void rbDiskOpModSaveXmv(void);
 void rbDiskOpModSaveMod(void);
 void rbDiskOpModSaveWav(void);
 void rbDiskOpSmpSaveWav(void);

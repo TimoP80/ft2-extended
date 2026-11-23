@@ -136,6 +136,8 @@
     <ClCompile Include="..\..\src\smploaders\ft2_load_ogg.c">
       <Filter>smploaders</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\ft2_vst2.cpp" />
+    <ClCompile Include="..\..\src\ft2_vst3.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\src\rtmidi\RtMidi.h">
@@ -256,6 +258,15 @@
       <Filter>headers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\ft2_video.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\ft2_vst2.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\ft2_vst3.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\ft2_plugin_instance.h">
       <Filter>headers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\ft2_wav_renderer.h">

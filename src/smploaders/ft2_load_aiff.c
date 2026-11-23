@@ -181,7 +181,12 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 		}
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -239,7 +244,12 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 			audioDataS16[i] = SWAP16(audioDataS16[i]);
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -304,7 +314,12 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 		}
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -373,7 +388,12 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 			audioDataS32[i] = SWAP32(audioDataS32[i]);
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -444,7 +464,12 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 		float *fAudioDataFloat = (float *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 			switch (stereoAction)
@@ -514,7 +539,12 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 		double *dAudioDataDouble = (double *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 			switch (stereoAction)
@@ -562,13 +592,22 @@ bool loadAIFF(FILE *f, uint32_t filesize)
 		s->flags |= SAMPLE_16BIT;
 	}
 
-	if (sampleLength > MAX_SAMPLE_LEN)
+	const bool stereoSample = !!(s->flags & SAMPLE_STEREO);
+	if (stereoSample)
+	{
+		sampleLength &= ~1u; // only whole interleaved L/R frames
+		if (sampleLength > MAX_SAMPLE_LEN*2)
+			sampleLength = MAX_SAMPLE_LEN*2;
+	}
+	else if (sampleLength > MAX_SAMPLE_LEN)
+	{
 		sampleLength = MAX_SAMPLE_LEN;
+	}
 
 	bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
 	reallocateSmpData(s, sampleLength, sample16Bit); // readjust memory needed
 
-	s->length = sampleLength;
+	s->length = (int32_t)(stereoSample ? (sampleLength >> 1) : sampleLength);
 	s->volume = 64;
 	s->panning = 128;
 

@@ -54,7 +54,7 @@ enum
 // file extensions accepted by Disk Op. in module mode
 char *supportedModExtensions[] =
 {
-	"xm", "ft", "nst", "stk", "mod", "s3m", "stm", "fst",
+	"xm", "xmv", "ft", "nst", "stk", "mod", "s3m", "stm", "fst",
 	"digi", "bem", "it",
 
 	// IMPORTANT: Remember comma after last entry above
@@ -286,6 +286,8 @@ static bool loadMusicUnthreaded(UNICHAR *filenameU)
 		return true;
 	}
 
+	// drop the plug-in references of an .xmv that failed to load
+	vst3DiscardSongVstChunk();
 	return false;
 }
 
@@ -491,6 +493,10 @@ static void setupLoadedModule(void)
 
 	unlockMixerCallback();
 
+	// The .xmv plug-in references/presets were parsed by the loading thread. The
+	// plug-ins themselves are created here, on the main thread (see ft2_vst3.cpp).
+	vst3ApplySongVstChunk();
+
 	editor.currVolEnvPoint = 0;
 	editor.currPanEnvPoint = 0;
 
@@ -538,6 +544,9 @@ bool handleModuleLoadFromArg(int argc, char **argv)
 	// we always expect only one parameter, and that it is the module
 
 	if (argc != 2 || argv[1] == NULL || argv[1][0] == '\0')
+		return false;
+
+	if (argv[1][0] == '-') // command-line switch, not a file to load
 		return false;
 
 #ifdef __APPLE__
@@ -749,6 +758,7 @@ void handleLoadMusicEvents(void)
 		moduleFailedToLoad = false;
 		moduleLoaded = false;
 		editor.loadMusicEvent = EVENT_NONE;
+		vst3DiscardSongVstChunk(); // drop a parsed .xmv plug-in chunk of the failed load
 		setMouseBusy(false);
 		return;
 	}

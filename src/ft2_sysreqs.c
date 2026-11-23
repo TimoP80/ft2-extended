@@ -35,7 +35,7 @@ static char *buttonText[NUM_SYSREQ_TYPES][MAX_PUSHBUTTONS] =
 
 	// custom dialogs
 	{ "Everything", "Song", "Instruments", "Cancel", "" },   // "song clear" dialog
-	{ "Left channel", "Right channel", "Mix to mono", "", "" }, // "stereo sample loader" dialog
+	{ "Left channel", "Right channel", "Mix to mono", "Keep stereo", "" }, // "stereo sample loader" dialog
 	{ "Mono", "Stereo", "Cancel", "","" },            // "audio sampling" dialog
 	{ "OK", "Preview", "Cancel", "","" }              // sample editor effects filters
 };
@@ -49,7 +49,7 @@ static SDL_Keycode shortCut[NUM_SYSREQ_TYPES][5] =
 
 	// custom dialogs
 	{ SDLK_e, SDLK_s, SDLK_i, SDLK_c, 0 }, // "song clear" dialog
-	{ SDLK_l, SDLK_r, SDLK_c, 0,      0 }, // "stereo sample loader" dialog 
+	{ SDLK_l, SDLK_r, SDLK_c, SDLK_k, 0 }, // "stereo sample loader" dialog 
 	{ SDLK_m, SDLK_s, SDLK_c, 0,      0 }, // "audio sampling" dialog
 	{ SDLK_o, SDLK_p, SDLK_c, 0,      0 }  // sample editor effects filters
 };

@@ -212,7 +212,12 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		audioDataU8 = (uint8_t *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -271,7 +276,12 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		audioDataS16 = (int16_t *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -339,7 +349,12 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		}
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -408,7 +423,12 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		audioDataS32 = (int32_t *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -477,7 +497,12 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		fAudioDataFloat = (float *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -543,7 +568,12 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		dAudioDataDouble = (double *)s->dataPtr;
 
 		// stereo conversion
-		if (numChannels == 2)
+		if (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		{
+			// keep the interleaved L/R frames as-is
+			s->flags |= SAMPLE_STEREO;
+		}
+		else if (numChannels == 2)
 		{
 			sampleLength /= 2;
 
@@ -592,8 +622,17 @@ bool loadWAV(FILE *f, uint32_t filesize)
 		s->flags |= SAMPLE_16BIT;
 	}
 
-	if (sampleLength > MAX_SAMPLE_LEN)
+	const bool stereoSample = !!(s->flags & SAMPLE_STEREO);
+	if (stereoSample)
+	{
+		sampleLength &= ~1u; // only whole interleaved L/R frames
+		if (sampleLength > MAX_SAMPLE_LEN*2)
+			sampleLength = MAX_SAMPLE_LEN*2;
+	}
+	else if (sampleLength > MAX_SAMPLE_LEN)
+	{
 		sampleLength = MAX_SAMPLE_LEN;
+	}
 
 	bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
 	reallocateSmpData(s, sampleLength, sample16Bit); // readjust memory needed
@@ -602,7 +641,7 @@ bool loadWAV(FILE *f, uint32_t filesize)
 
 	s->volume = 64;
 	s->panning = 128;
-	s->length = sampleLength;
+	s->length = (int32_t)(stereoSample ? (sampleLength >> 1) : sampleLength);
 
 	// ---- READ "smpl" chunk ----
 	if (smplPtr != 0 && smplLen > 52)
@@ -621,7 +660,7 @@ bool loadWAV(FILE *f, uint32_t filesize)
 			fread(&loopEnd, 4, 1, f);
 
 			loopEnd++;
-			if (loopEnd <= sampleLength)
+			if (loopEnd <= (uint32_t)s->length)
 			{
 				s->loopStart = loopStart;
 				s->loopLength = loopEnd - loopStart;

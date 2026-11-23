@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 #include "../ft2_header.h"
 #include "../ft2_events.h"
 #include "../ft2_config.h"
@@ -17,12 +18,14 @@
 #include "../ft2_tables.h"
 #include "../ft2_structs.h"
 #include "../ft2_hpc.h"
+#include "../ft2_vst3.h"
 #include "ft2_scopes.h"
 #include "ft2_scopedraw.h"
 
 static volatile bool scopesUpdatingFlag, scopesDisplayingFlag;
 static hpc_t scopeHpc;
 static volatile scope_t scope[MAX_CHANNELS];
+static uint8_t vst3ScopeOwner[MAX_VST3_INSTRUMENTS]; // channel showing an instrument's live output
 static SDL_Thread *scopeThread;
 
 lastChInstr_t lastChInstr[MAX_CHANNELS]; // global
@@ -56,6 +59,8 @@ void stopAllScopes(void)
 	volatile scope_t *sc = scope;
 	for (int32_t i = 0; i < MAX_CHANNELS; i++, sc++)
 		sc->active = false;
+
+	memset(vst3ScopeOwner, 0xFF, sizeof (vst3ScopeOwner));
 
 	// wait for scope displaying to be done (safety)
 	while (scopesDisplayingFlag);
@@ -354,6 +359,27 @@ static void updateScopes(void)
 		if (!s.active)
 			continue; // scope is not active
 
+		if (s.vst3)
+		{
+			// live VST3 output has no sample position to advance. Blank the scope once
+			// the instrument has been silent for a while (release tails included).
+			if (vst3GetScopePeak(s.vst3Instrument) < 0.0002f)
+			{
+				if (s.vst3SilentFrames < 255)
+					s.vst3SilentFrames++;
+
+				if (s.vst3SilentFrames > 16) // ~250ms at SCOPE_HZ
+					s.active = false;
+			}
+			else
+			{
+				s.vst3SilentFrames = 0;
+			}
+
+			*sc = s; // set new scope state
+			continue;
+		}
+
 		// scope position update
 
 		s.positionFrac += s.delta;
@@ -402,6 +428,56 @@ static void updateScopes(void)
 	scopesUpdatingFlag = false;
 }
 
+// live waveform of a VST3 instrument, drawn as a min/max envelope
+static void drawVST3Scope(const scope_t *s, uint32_t scopeXOffs, uint32_t scopeDrawLen, int32_t scopeLineY)
+{
+	enum { VST3_SCOPE_WINDOW = 1024 };
+	float samples[VST3_SCOPE_WINDOW];
+
+	const uint32_t count = vst3GetScopeSamples(s->vst3Instrument, samples, VST3_SCOPE_WINDOW);
+	if (count == 0 || scopeDrawLen == 0)
+		return;
+
+	// the plugin output is not scaled by the channel volume, so use full scale
+	const float fVolume = (float)(SCOPE_HEIGHT / 2);
+
+	const uint32_t color = video.palette[PAL_PATTEXT];
+	const int32_t yMin = scopeLineY - (SCOPE_HEIGHT / 2) + 1;
+	const int32_t yMax = scopeLineY + (SCOPE_HEIGHT / 2) - 1;
+
+	for (uint32_t i = 0; i < scopeDrawLen; i++)
+	{
+		const uint32_t start = (i * count) / scopeDrawLen;
+		if (start >= count)
+			break;
+
+		uint32_t end = ((i + 1) * count) / scopeDrawLen;
+		if (end <= start)
+			end = start + 1;
+
+		float minSample = samples[start];
+		float maxSample = samples[start];
+		for (uint32_t j = start + 1; j < end; j++)
+		{
+			if (samples[j] < minSample) minSample = samples[j];
+			if (samples[j] > maxSample) maxSample = samples[j];
+		}
+
+		int32_t y1 = CLAMP(scopeLineY - (int32_t)floorf(maxSample * fVolume), yMin, yMax);
+		int32_t y2 = CLAMP(scopeLineY - (int32_t)floorf(minSample * fVolume), yMin, yMax);
+		if (y1 > y2)
+		{
+			const int32_t tmp = y1;
+			y1 = y2;
+			y2 = tmp;
+		}
+
+		const uint32_t x = scopeXOffs + i;
+		for (int32_t y = y1; y <= y2; y++)
+			video.frameBuffer[(y * SCREEN_W) + x] = color;
+	}
+}
+
 void drawScopes(void)
 {
 	scopesDisplayingFlag = true;
@@ -430,7 +506,8 @@ void drawScopes(void)
 		}
 
 		volatile scope_t s = scope[i]; // cache scope to lower thread race condition issues
-		if (s.active && s.volume > 0 && !audio.locked)
+		// VST3 scopes are not gated on the channel volume (empty instrument slots report 0)
+		if (s.active && (s.vst3 || s.volume > 0) && !audio.locked)
 		{
 			// scope is active
 			scope[i].wasCleared = false;
@@ -438,9 +515,17 @@ void drawScopes(void)
 			// clear scope background
 			clearRect(scopeXOffs, scopeYOffs, scopeDrawLen, SCOPE_HEIGHT);
 
-			// draw scope
-			bool linedScopesFlag = !!(config.specialFlags & LINED_SCOPES);
-			scopeDrawRoutineTable[(linedScopesFlag * 6) + (s.sample16Bit * 3) + s.loopType]((const scope_t *)&s, scopeXOffs, scopeLineY, scopeDrawLen);
+			if (s.vst3)
+			{
+				// live VST3 instrument output
+				drawVST3Scope((const scope_t *)&s, scopeXOffs, scopeDrawLen, scopeLineY);
+			}
+			else
+			{
+				// draw scope
+				bool linedScopesFlag = !!(config.specialFlags & LINED_SCOPES);
+				scopeDrawRoutineTable[(linedScopesFlag * 6) + (s.sample16Bit * 3) + s.loopType]((const scope_t *)&s, scopeXOffs, scopeLineY, scopeDrawLen);
+			}
 		}
 		else
 		{
@@ -499,9 +584,18 @@ void handleScopesFromChQueue(chSyncData_t *chSyncData, uint8_t *scopeUpdateStatu
 
 		if (status & CS_TRIGGER_VOICE)
 		{
-			if (instr[ch->instrNum] != NULL)
+			sample_t *smp = NULL;
+			if (instr[ch->instrNum] != NULL && ch->smpNum < MAX_SMP_PER_INST)
 			{
-				scopeTrigger(i, &instr[ch->instrNum]->smp[ch->smpNum], ch->smpStartPos);
+				sample_t *s = &instr[ch->instrNum]->smp[ch->smpNum];
+				if (s->dataPtr != NULL && s->length >= 1)
+					smp = s;
+			}
+
+			if (smp != NULL)
+			{
+				scopeTrigger(i, smp, ch->smpStartPos);
+				sc->vst3 = false;
 
 				// set some stuff used by Smp. Ed. for sampling position line
 
@@ -511,13 +605,37 @@ void handleScopesFromChQueue(chSyncData_t *chSyncData, uint8_t *scopeUpdateStatu
 				lastChInstr[i].instrNum = ch->instrNum;
 				lastChInstr[i].smpNum = ch->smpNum;
 			}
+			else if (vst3GetAssignedInstrument(ch->instrNum) >= 0)
+			{
+				// slot has no sample data, but it drives a VST3 instrument: show its live output
+				sc->active = true;
+				sc->vst3 = true;
+				sc->vst3Instrument = ch->instrNum;
+				sc->vst3SilentFrames = 0;
+				sc->sampleEnd = 0;
+				sc->wasCleared = false;
+
+				// the plug-in output is shared by every channel that plays this
+				// instrument, so only the channel that just keyed the note shows it
+				vst3ScopeOwner[ch->instrNum] = (uint8_t)i;
+
+				lastChInstr[i].instrNum = ch->instrNum;
+				lastChInstr[i].smpNum = 255;
+			}
 			else
 			{
 				// empty instrument, shut down scope
 				scope[i].active = false;
+				sc->vst3 = false;
 				lastChInstr[i].instrNum = 255;
 				lastChInstr[i].smpNum = 255;
 			}
+		}
+		else if (sc->vst3 && vst3ScopeOwner[sc->vst3Instrument] != (uint8_t)i)
+		{
+			// another channel took over the live plug-in output, hide it here
+			sc->active = false;
+			sc->vst3 = false;
 		}
 	}
 }
@@ -545,6 +663,8 @@ static int32_t scopeThreadFunc(void *ptr)
 
 bool initScopes(void)
 {
+	memset(vst3ScopeOwner, 0xFF, sizeof (vst3ScopeOwner));
+
 	scopeThread = SDL_CreateThread(scopeThreadFunc, "scope thread", NULL);
 	if (scopeThread == NULL)
 	{

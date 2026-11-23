@@ -497,8 +497,7 @@ static void wipeSmpDataAfterLoop(bool testWipeSize, int16_t ai)
 						freeSmpData(s);
 					}
 					else
-					{
-						reallocateSmpData(s, s->length, !!(s->flags & SAMPLE_16BIT));
+					{							reallocateSmpData(s, SAMPLE_LENGTH_SAMPLES(s), !!(s->flags & SAMPLE_16BIT));
 					}
 				}
 
@@ -558,7 +557,7 @@ static void convertSamplesTo8bit(bool testWipeSize, int16_t ai)
 
 					s->flags &= ~SAMPLE_16BIT;
 
-					reallocateSmpData(s, s->length, true);
+					reallocateSmpData(s, SAMPLE_LENGTH_SAMPLES(s), true);
 					fixSample(s);
 				}
 			}

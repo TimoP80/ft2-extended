@@ -52,6 +52,8 @@ void mouseZoomSampleDataOut(void);
 void zoomOut(void);
 void showAll(void);
 void saveRange(void);
+bool stereoEditNotSupported(void); // TRUE (and shows a message) if the current sample is stereo
+
 void sampCut(void);
 void sampCopy(void);
 void sampPaste(void);
@@ -89,6 +91,7 @@ void sampleByteSwap(void);
 void fixDC(void);
 void smpEdStop(void);
 void testSmpEdMouseUp(void);
+void pbLoopStretchTempo(void);
 
 void sampleLine(int32_t x1, int32_t x2, int32_t y1, int32_t y2);
 

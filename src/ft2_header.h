@@ -14,6 +14,10 @@
 #endif
 #include "ft2_replayer.h"
 
+#ifdef _WIN32
+#include "ft2_vst3.h"
+#endif
+
 #define PROG_VER_STR "2.30"
 
 // do NOT change these! It will only mess things up...
@@ -40,8 +44,9 @@
 ** branchless in the inner channel mixer loop.
 ** Warning: Do not change this!
 */
-#define SMP_DAT_OFFSET ((MAX_LEFT_TAPS*2)+1)
-#define SAMPLE_PAD_LENGTH (SMP_DAT_OFFSET+(MAX_RIGHT_TAPS*2))
+// offset must fit the interpolation taps of mono -and- interleaved stereo samples
+#define SMP_DAT_OFFSET ((MAX_LEFT_TAPS*2*2)+1)
+#define SAMPLE_PAD_LENGTH (SMP_DAT_OFFSET+(MAX_RIGHT_TAPS*2*2))
 
 #ifndef _WIN32
 #define _stricmp strcasecmp
@@ -49,7 +54,9 @@
 #define DIR_DELIMITER '/'
 #else
 #define DIR_DELIMITER '\\'
+#ifndef PATH_MAX // already defined by the toolchain's limits.h
 #define PATH_MAX MAX_PATH
+#endif
 #endif
 
 #define MY_PI 3.14159265358979323846264338327950288

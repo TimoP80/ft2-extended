@@ -101,7 +101,7 @@
     <key>CFBundleExecutable</key>
     <string>ft2-clone-macos</string>
     <key>CFBundleGetInfoString</key>
-    <string>Fasttracker II clone</string>
+    <string>Fasttracker 2 Clone Extended</string>
     <key>CFBundleIconFile</key>
     <string>ft2-clone-macos.icns</string>
     <key>CFBundleIdentifier</key>
@@ -109,9 +109,9 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Fasttracker II clone</string>
+    <string>Fasttracker 2 Clone Extended</string>
     <key>CFBundleDisplayName</key>
-    <string>Fasttracker II clone</string>
+    <string>Fasttracker 2 Clone Extended</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

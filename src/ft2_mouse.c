@@ -533,12 +533,27 @@ void mouseWheelHandler(bool directionUp)
 					directionUp ? scrollMidiInputDevListUp() : scrollMidiInputDevListDown();
 			}
 #endif
+			else if (editor.currConfigScreen == CONFIG_SCREEN_VST3)
+			{
+				if (vst3FxPanelMouseWheel(directionUp))
+				{
+					// wheel event was consumed by the master effect panel
+				}
+				// VST3 plugin list
+				else if (mouse.x >= 110 && mouse.x <= 638 && mouse.y >= 16 && mouse.y <= 136)
+					directionUp ? scrollVST3PluginListUp() : scrollVST3PluginListDown();
+			}
+
 		}
 
 		if (!ui.aboutScreenShown  && !ui.helpScreenShown &&
 			!ui.configScreenShown && !ui.nibblesShown)
 		{
-			if (mouse.x >= 421 && mouse.y <= 173)
+			if (vst3InstrumentListMouseWheel(directionUp))
+			{
+				// wheel event was consumed by the open VST3 instrument list
+			}
+			else if (mouse.x >= 421 && mouse.y <= 173)
 			{
 				     if (mouse.y <= 93) directionUp ? decCurIns() : incCurIns();
 				else if (mouse.y >= 94) directionUp ? decCurSmp() : incCurSmp();
@@ -750,6 +765,20 @@ void mouseButtonDownHandler(uint8_t mouseButton)
 
 	testInstrSwitcherMouseDown(); // kludge: allow right click to both change ins. and edit text
 
+	// open VST3 master effect chain panel swallows clicks on the config screen
+	if (!mouse.rightButtonPressed)
+	{
+		if (testVST3FxPanelMouseDown()) return;
+	}
+
+	// VST3 instrument controls in the extended instrument editor
+	if (!mouse.rightButtonPressed)
+	{
+		if (testVST3InstrumentListMouseDown()) return;
+		if (testVST3InstrumentEditorMouseDown()) return;
+		if (testVST3InstrumentSelectorMouseDown()) return;
+	}
+
 	if (testTextBoxMouseDown()) return;
 	if (testPushButtonMouseDown()) return;
 	if (testCheckBoxMouseDown()) return;
@@ -769,6 +798,7 @@ void mouseButtonDownHandler(uint8_t mouseButton)
 	if (testPatternDataMouseDown()) return;
 	if (testScopesMouseDown()) return;
 	if (testAudioDeviceListsMouseDown()) return;
+	if (testVST3PluginListMouseDown()) return;
 
 #ifdef HAS_MIDI
 	if (testMidiInputDeviceListMouseDown()) return;

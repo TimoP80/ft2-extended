@@ -63,7 +63,7 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LibraryPath>sdl\lib;$(VCInstallDir)lib;$(LibraryPath)</LibraryPath>
-    <IncludePath>sdl\include;$(VCInstallDir)include;$(IncludePath)</IncludePath>
+    <IncludePath>sdl\include;..\..\third_party\vst3sdk;$(VCInstallDir)include;$(IncludePath)</IncludePath>
     <OutDir>..\..\release\win32\</OutDir>
     <LinkIncremental>false</LinkIncremental>
     <TargetName>ft2-clone-win32</TargetName>
@@ -74,17 +74,17 @@
     <TargetName>ft2-clone-win64</TargetName>
     <CodeAnalysisRuleSet>AllRules.ruleset</CodeAnalysisRuleSet>
     <LibraryPath>sdl\lib64;$(VCInstallDir)lib;$(LibraryPath)</LibraryPath>
-    <IncludePath>sdl\include;$(VCInstallDir)include;$(IncludePath)</IncludePath>
+    <IncludePath>sdl\include;..\..\third_party\vst3sdk;$(VCInstallDir)include;$(IncludePath)</IncludePath>
     <OutDir>..\..\release\win64\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LibraryPath>sdl\lib;$(VCInstallDir)lib;$(LibraryPath)</LibraryPath>
-    <IncludePath>sdl\include;$(VCInstallDir)include;$(IncludePath)</IncludePath>
+    <IncludePath>sdl\include;..\..\third_party\vst3sdk;$(VCInstallDir)include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LibraryPath>sdl\lib64;$(VCInstallDir)lib;$(LibraryPath)</LibraryPath>
-    <IncludePath>sdl\include;$(VCInstallDir)include;$(IncludePath)</IncludePath>
+    <IncludePath>sdl\include;..\..\third_party\vst3sdk;$(VCInstallDir)include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -92,7 +92,7 @@
       <Optimization>MaxSpeed</Optimization>
       <AdditionalIncludeDirectories>
       </AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>__WINDOWS_MM__;NDEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>__WINDOWS_MM__;NDEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;NOMINMAX;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <StringPooling>true</StringPooling>
@@ -144,7 +144,7 @@
       <Optimization>MaxSpeed</Optimization>
       <AdditionalIncludeDirectories>
       </AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>__WINDOWS_MM__;NDEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>__WINDOWS_MM__;NDEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;NOMINMAX;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <StringPooling>true</StringPooling>
@@ -205,7 +205,7 @@
       <WarningLevel>Level4</WarningLevel>
       <AdditionalIncludeDirectories>
       </AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>__WINDOWS_MM__;_CRTDBG_MAP_ALLOC;DEBUG;_DEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>__WINDOWS_MM__;_CRTDBG_MAP_ALLOC;DEBUG;_DEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;NOMINMAX;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -248,7 +248,7 @@
       <WarningLevel>Level4</WarningLevel>
       <AdditionalIncludeDirectories>
       </AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>__WINDOWS_MM__;_CRTDBG_MAP_ALLOC;DEBUG;_DEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>__WINDOWS_MM__;_CRTDBG_MAP_ALLOC;DEBUG;_DEBUG;WIN32;_CRT_SECURE_NO_WARNINGS;NOMINMAX;HAS_MIDI;HAS_LIBFLAC</PreprocessorDefinitions>
       <StringPooling>
       </StringPooling>
       <OmitFramePointers>false</OmitFramePointers>
@@ -343,6 +343,8 @@
     <ClCompile Include="..\..\src\ft2_trim.c" />
     <ClCompile Include="..\..\src\ft2_unicode.c" />
     <ClCompile Include="..\..\src\ft2_video.c" />
+    <ClCompile Include="..\..\src\ft2_vst2.cpp" />
+    <ClCompile Include="..\..\src\ft2_vst3.cpp" />
     <ClCompile Include="..\..\src\ft2_wav_renderer.c" />
     <ClCompile Include="..\..\src\gfxdata\ft2_bmp_fonts.c" />
     <ClCompile Include="..\..\src\gfxdata\ft2_bmp_gui.c" />
@@ -411,6 +413,7 @@
     <ClInclude Include="..\..\src\ft2_palette.h" />
     <ClInclude Include="..\..\src\ft2_pattern_ed.h" />
     <ClInclude Include="..\..\src\ft2_pattern_draw.h" />
+    <ClInclude Include="..\..\src\ft2_plugin_instance.h" />
     <ClInclude Include="..\..\src\ft2_pushbuttons.h" />
     <ClInclude Include="..\..\src\ft2_radiobuttons.h" />
     <ClInclude Include="..\..\src\ft2_random.h" />
@@ -429,6 +432,8 @@
     <ClInclude Include="..\..\src\ft2_trim.h" />
     <ClInclude Include="..\..\src\ft2_unicode.h" />
     <ClInclude Include="..\..\src\ft2_video.h" />
+    <ClInclude Include="..\..\src\ft2_vst2.h" />
+    <ClInclude Include="..\..\src\ft2_vst3.h" />
     <ClInclude Include="..\..\src\ft2_wav_renderer.h" />
     <ClInclude Include="..\..\src\mixer\ft2_windowed_sinc.h" />
     <ClInclude Include="..\..\src\mixer\ft2_mix.h" />
