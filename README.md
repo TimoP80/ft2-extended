@@ -1,6 +1,12 @@
 # Fasttracker 2 Clone Extended
 Fasttracker 2 Clone Extended for Windows/macOS/Linux
 
+> **About this fork:** this is **Fasttracker 2 Clone Extended**, based on upstream
+> [olavrv/ft2-clone](https://github.com/olavrv/ft2-clone) (merged up to v2.30).
+> It adds VST instrument/effect hosting, true stereo samples, and a new `.xmv`
+> song format on top of the accurate FT2 clone. See
+> [DOCUMENTATION_OF_CHANGES.md](DOCUMENTATION_OF_CHANGES.md) for the full change list.
+
 Aims to be a highly accurate clone of the classic Fasttracker II software for MS-DOS. \
 The XM player itself has been directly ported from the original source code, for maximum accuracy. \
 The code is partly my own, partly based on the original FT2 code.
@@ -12,6 +18,24 @@ Windows/macOS binary releases can always be found at [16-bits.org](https://16-bi
 
 Linux binaries can be found [here](https://repology.org/project/fasttracker2/versions). \
 If these don't work for you, you'll have to compile the code manually.
+
+# New in this fork (Extended changes)
+- **VST2/VST3 hosting (Windows):** per-instrument VST instruments plus a 4-slot master
+  effect chain, with plugin editors, crash-isolated background scanner, plugin cache
+  stored in `FT2.CFG`, and latency compensation. New `Config -> VST3` screen
+  (`Ctrl+F11`), instrument-editor assignment popup, live scopes for VST output.
+  Other platforms compile with a no-op stub so songs still load.
+- **True stereo samples:** `SAMPLE_STEREO` is honored end-to-end (interleaved storage,
+  stereo mixer path with all interpolations, stereo waveform, stereo-aware loaders with
+  a "Keep stereo" option) instead of being downmixed to mono.
+- **New `.xmv` song format:** a plain `.xm` with an appended `FT2VSTXM` chunk holding
+  plugin references + state, so songs with VSTs save/load. Regular `.xm` files stay
+  fully compatible.
+- **Sample-editor "Loop tempo" tool:** time-stretch a loop so one cycle lasts N song ticks.
+- **Build:** `CMakeLists.txt` (VST sources on Win32, stub elsewhere), `make-windows.bat`
+  (LLVM-MinGW), VS2026 project updates, and the Steinberg VST3 SDK 3.8.1 as a
+  `third_party/vst3sdk` submodule — clone with `git clone --recurse-submodules`.
+- Full details: [DOCUMENTATION_OF_CHANGES.md](DOCUMENTATION_OF_CHANGES.md).
 
 # Improvements over original DOS version
 - New sample editor features, like waveform generators and resonant filters
