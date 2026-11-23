@@ -65,10 +65,11 @@ radioButton_t radioButtons[NUM_RADIOBUTTONS] =
 	// ------ CONFIG SCREEN LEFT RADIOBUTTONS ------
 	//x, y,  w,  group,                  funcOnUp
 	{ 5, 18, 48, RB_GROUP_CONFIG_SELECT, rbConfigAudio },
-	{ 5, 34, 57, RB_GROUP_CONFIG_SELECT, rbConfigLayout },
-	{ 5, 50, 97, RB_GROUP_CONFIG_SELECT, rbConfigMiscellaneous },
+	{ 5, 33, 57, RB_GROUP_CONFIG_SELECT, rbConfigLayout },
+	{ 5, 48, 97, RB_GROUP_CONFIG_SELECT, rbConfigMiscellaneous },
+	{ 5, 63, 40, RB_GROUP_CONFIG_SELECT, rbConfigVST3 },
 #ifdef HAS_MIDI
-	{ 5, 66, 72, RB_GROUP_CONFIG_SELECT, rbConfigMidiInput },
+	{ 5, 78, 72, RB_GROUP_CONFIG_SELECT, rbConfigMidiInput },
 #endif
 
 	// ------ CONFIG AUDIO ------
@@ -196,7 +197,8 @@ radioButton_t radioButtons[NUM_RADIOBUTTONS] =
 	//x, y,  w,   group,                      funcOnUp
 	{ 4, 100, 40, RB_GROUP_DISKOP_MOD_SAVEAS, rbDiskOpModSaveMod },
 	{ 4, 114, 33, RB_GROUP_DISKOP_MOD_SAVEAS, rbDiskOpModSaveXm },
-	{ 4, 128, 40, RB_GROUP_DISKOP_MOD_SAVEAS, rbDiskOpModSaveWav },
+	{ 4, 128, 40, RB_GROUP_DISKOP_MOD_SAVEAS, rbDiskOpModSaveXmv },
+	{ 4, 142, 40, RB_GROUP_DISKOP_MOD_SAVEAS, rbDiskOpModSaveWav },
 
 	// INSTRUMENT SAVE AS FORMATS
 	//x, y,   w,  group,                      funcOnUp

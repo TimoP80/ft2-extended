@@ -50,6 +50,11 @@ static SDL_Thread *thread;
 // globals
 int32_t smpEd_Rx1 = 0, smpEd_Rx2 = 0;
 
+// stereo sample waveform layout (two half-height channels in the sample data area)
+#define STEREO_SAMPLE_HEIGHT (SAMPLE_AREA_HEIGHT/2)
+#define STEREO_SAMPLE_L_CENTER (SAMPLE_AREA_Y_CENTER - (STEREO_SAMPLE_HEIGHT/2))
+#define STEREO_SAMPLE_R_CENTER (SAMPLE_AREA_Y_CENTER + (STEREO_SAMPLE_HEIGHT/2))
+
 // allocs sample with proper alignment and padding for branchless resampling interpolation
 bool allocateSmpData(sample_t *s, int32_t length, bool sample16Bit)
 {
@@ -172,18 +177,30 @@ bool cloneSample(sample_t *src, sample_t *dst)
 		if (src->length > 0 && src->dataPtr != NULL)
 		{
 			bool sample16Bit = !!(src->flags & SAMPLE_16BIT);
-			if (!allocateSmpDataPtr(&sp, src->length, sample16Bit))
+			if (!allocateSmpDataPtr(&sp, SAMPLE_LENGTH_SAMPLES(src), sample16Bit))
 			{
 				dst->length = 0;
 				return false;
 			}
 
 			setSmpDataPtr(dst, &sp);
-			memcpy(dst->dataPtr, src->dataPtr, src->length << sample16Bit);
+			memcpy(dst->dataPtr, src->dataPtr, SAMPLE_LENGTH_BYTES(src));
 			fixSample(dst);
 		}
 	}
 
+	return true;
+}
+
+// The sample editor still works on mono sample layout, so its data tools must
+// not run on stereo samples (they would truncate or corrupt the right channel).
+bool stereoEditNotSupported(void)
+{
+	sample_t *s = getCurSample();
+	if (s == NULL || !(s->flags & SAMPLE_STEREO))
+		return false;
+
+	okBoxThreadSafe(0, "System message", "Sorry, this is not supported for stereo samples yet!", NULL);
 	return true;
 }
 
@@ -224,6 +241,188 @@ static int32_t myMod(int32_t a, int32_t b) // works on negative numbers!
 	return (c < 0) ? (c + b) : c;
 }
 
+static inline int32_t getSmpElement(const int8_t *data, bool sample16Bit, int32_t elem)
+{
+	if (sample16Bit)
+		return ((const int16_t *)data)[elem];
+
+	return data[elem];
+}
+
+static inline void setSmpElement(int8_t *data, bool sample16Bit, int32_t elem, int32_t value)
+{
+	if (sample16Bit)
+		((int16_t *)data)[elem] = (int16_t)value;
+	else
+		data[elem] = (int8_t)value;
+}
+
+// Same as fixSample(), but for interleaved L/R stereo data (length/loops are frames)
+static void fixStereoSample(sample_t *s)
+{
+	const bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
+	int8_t *data = s->dataPtr;
+	const int32_t numFrames = s->length;
+	uint8_t loopType = GET_LOOPTYPE(s->flags);
+	int32_t loopStart = s->loopStart;
+	int32_t loopLength = s->loopLength;
+	int32_t loopEnd = loopStart + loopLength;
+	int32_t pos;
+	bool backwards;
+
+	const int32_t tapOffset = MAX_LEFT_TAPS*2;
+
+	if (loopType != LOOP_DISABLED && loopLength <= 0)
+	{
+		loopType = LOOP_DISABLED;
+		loopStart = loopLength = loopEnd = 0;
+	}
+
+	// negative taps before position #0 repeat the first frame
+	for (int32_t i = 1; i <= MAX_LEFT_TAPS; i++)
+	{
+		for (int32_t ch = 0; ch < 2; ch++)
+			setSmpElement(data, sample16Bit, (-i*2)+ch, getSmpElement(data, sample16Bit, ch));
+	}
+
+	if (loopType == LOOP_DISABLED) // no loop
+	{
+		for (int32_t i = 0; i < MAX_RIGHT_TAPS; i++)
+		{
+			for (int32_t ch = 0; ch < 2; ch++)
+			{
+				const int32_t srcElem = ((numFrames-1)*2)+ch;
+				setSmpElement(data, sample16Bit, ((numFrames+i)*2)+ch, getSmpElement(data, sample16Bit, srcElem));
+			}
+		}
+
+		s->fixedPos = 0; // not used for non-looping samples
+		s->isFixed = false;
+		return;
+	}
+
+	s->fixedPos = loopEnd;
+	s->isFixed = true;
+
+	if (loopType == LOOP_FORWARD) // forward loop
+	{
+		// left edge (MAX_TAPS taps starting from the center tap)
+		for (int32_t i = -MAX_LEFT_TAPS; i < MAX_TAPS; i++)
+		{
+			pos = loopStart + myMod(i, loopLength);
+
+			for (int32_t ch = 0; ch < 2; ch++)
+			{
+				const int32_t value = getSmpElement(data, sample16Bit, (pos*2)+ch);
+
+				if (sample16Bit)
+					s->leftEdgeTapSamples16[tapOffset+(i*2)+ch] = (int16_t)value;
+				else
+					s->leftEdgeTapSamples8[tapOffset+(i*2)+ch] = (int8_t)value;
+			}
+		}
+
+		// right edge (data after the loop is never used, so it can be overwritten)
+		pos = loopStart;
+		for (int32_t i = 0; i < MAX_RIGHT_TAPS; i++)
+		{
+			for (int32_t ch = 0; ch < 2; ch++)
+			{
+				const int32_t elem = ((loopEnd+i)*2)+ch;
+				s->fixedSmp[(i*2)+ch] = (int16_t)getSmpElement(data, sample16Bit, elem);
+				setSmpElement(data, sample16Bit, elem, getSmpElement(data, sample16Bit, (pos*2)+ch));
+			}
+
+			if (++pos >= loopEnd)
+				pos -= loopLength;
+		}
+	}
+	else // pingpong loop
+	{
+		// left edge (positive taps)
+		pos = loopStart;
+		backwards = false;
+		for (int32_t i = 0; i < MAX_TAPS; i++)
+		{
+			if (backwards)
+			{
+				if (pos < loopStart)
+				{
+					pos = loopStart;
+					backwards = false;
+				}
+			}
+			else if (pos >= loopEnd)
+			{
+				pos = loopEnd-1;
+				backwards = true;
+			}
+
+			for (int32_t ch = 0; ch < 2; ch++)
+			{
+				const int32_t value = getSmpElement(data, sample16Bit, (pos*2)+ch);
+
+				if (sample16Bit)
+					s->leftEdgeTapSamples16[tapOffset+(i*2)+ch] = (int16_t)value;
+				else
+					s->leftEdgeTapSamples8[tapOffset+(i*2)+ch] = (int8_t)value;
+			}
+
+			if (backwards)
+				pos--;
+			else
+				pos++;
+		}
+
+		// left edge (negative taps)
+		for (int32_t i = 0; i < MAX_LEFT_TAPS; i++)
+		{
+			for (int32_t ch = 0; ch < 2; ch++)
+			{
+				const int32_t dstIdx = tapOffset+(((MAX_LEFT_TAPS-1)-i)*2)+ch;
+				const int32_t srcIdx = tapOffset+((MAX_LEFT_TAPS+1+i)*2)+ch;
+
+				if (sample16Bit)
+					s->leftEdgeTapSamples16[dstIdx] = s->leftEdgeTapSamples16[srcIdx];
+				else
+					s->leftEdgeTapSamples8[dstIdx] = s->leftEdgeTapSamples8[srcIdx];
+			}
+		}
+
+		// right edge (data after the loop is never used, so it can be overwritten)
+		pos = loopEnd-1;
+		backwards = true;
+		for (int32_t i = 0; i < MAX_RIGHT_TAPS; i++)
+		{
+			if (backwards)
+			{
+				if (pos < loopStart)
+				{
+					pos = loopStart;
+					backwards = false;
+				}
+			}
+			else if (pos >= loopEnd)
+			{
+				pos = loopEnd-1;
+				backwards = true;
+			}
+
+			for (int32_t ch = 0; ch < 2; ch++)
+			{
+				const int32_t elem = ((loopEnd+i)*2)+ch;
+				s->fixedSmp[(i*2)+ch] = (int16_t)getSmpElement(data, sample16Bit, elem);
+				setSmpElement(data, sample16Bit, elem, getSmpElement(data, sample16Bit, (pos*2)+ch));
+			}
+
+			if (backwards)
+				pos--;
+			else
+				pos++;
+		}
+	}
+}
+
 // modifies samples before index 0, and after loop/end (for branchless mixer interpolation (kinda))
 void fixSample(sample_t *s)
 {
@@ -236,6 +435,12 @@ void fixSample(sample_t *s)
 		s->isFixed = false;
 		s->fixedPos = 0;
 		return; // empty sample
+	}
+
+	if (s->flags & SAMPLE_STEREO)
+	{
+		fixStereoSample(s);
+		return;
 	}
 
 	const bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
@@ -467,6 +672,25 @@ void unfixSample(sample_t *s)
 	ASSERT(s != NULL);
 	if (s->dataPtr == NULL || !s->isFixed)
 		return; // empty sample or not fixed (f.ex. no loop)
+
+	if (s->flags & SAMPLE_STEREO)
+	{
+		if (s->flags & SAMPLE_16BIT)
+		{
+			int16_t *ptr16 = (int16_t *)s->dataPtr + (s->fixedPos*2);
+			for (int32_t i = 0; i < MAX_RIGHT_TAPS*2; i++)
+				ptr16[i] = s->fixedSmp[i];
+		}
+		else // 8-bit
+		{
+			int8_t *ptr8 = s->dataPtr + (s->fixedPos*2);
+			for (int32_t i = 0; i < MAX_RIGHT_TAPS*2; i++)
+				ptr8[i] = (int8_t)s->fixedSmp[i];
+		}
+
+		s->isFixed = false;
+		return;
+	}
 
 	if (s->flags & SAMPLE_16BIT)
 	{
@@ -734,6 +958,12 @@ void copySmp(void) // copy sample from srcInstr->srcSmp to curInstr->curSmp
 	if (editor.curInstr == 0 || (editor.curInstr == editor.srcInstr && editor.curSmp == editor.srcSmp))
 		return;
 
+	if (instr[editor.curInstr]->smp[editor.curSmp].flags & SAMPLE_STEREO)
+	{
+		okBox(0, "System message", "Sorry, stereo samples can't be overwritten in the sample editor yet!", NULL);
+		return;
+	}
+
 	mouseAnimOn();
 	thread = SDL_CreateThread(copySampleThread, "copy sample thread", NULL);
 	if (thread == NULL)
@@ -799,14 +1029,15 @@ static void writeRange(void)
 	}
 }
 
-static int32_t getScaledSample(sample_t *s, int32_t index) // for sample data viewer
+static int32_t getScaledSample(sample_t *s, int32_t index, int32_t channel, int32_t centerY, int32_t height) // for sample data viewer
 {
 	int32_t tmp32, sample;
 
 	const int32_t loopEnd = s->loopStart + s->loopLength;
+	const int32_t stride = (s->flags & SAMPLE_STEREO) ? 2 : 1; // interleaved L/R frames
 
 	if (s->dataPtr == NULL || index < 0 || index >= s->length)
-		return 0;
+		return centerY;
 
 	if (s->flags & SAMPLE_16BIT)
 	{
@@ -814,23 +1045,23 @@ static int32_t getScaledSample(sample_t *s, int32_t index) // for sample data vi
 
 		// don't read fixed mixer interpolation samples, read the prestine ones instead
 		if (index >= s->fixedPos && index < s->fixedPos+MAX_RIGHT_TAPS && s->length > loopEnd && s->isFixed)
-			tmp32 = s->fixedSmp[index-s->fixedPos];
+			tmp32 = s->fixedSmp[((index-s->fixedPos)*stride)+channel];
 		else
-			tmp32 = ptr16[index];
+			tmp32 = ptr16[(index*stride)+channel];
 
-		sample = (int8_t)((tmp32 * SAMPLE_AREA_HEIGHT) >> 16);
+		sample = (int8_t)((tmp32 * height) >> 16);
 	}
 	else // 8-bit
 	{
 		if (index >= s->fixedPos && index < s->fixedPos+MAX_RIGHT_TAPS && s->length > loopEnd && s->isFixed)
-			tmp32 = s->fixedSmp[index-s->fixedPos];
+			tmp32 = s->fixedSmp[((index-s->fixedPos)*stride)+channel];
 		else
-			tmp32 = s->dataPtr[index];
+			tmp32 = s->dataPtr[(index*stride)+channel];
 
-		sample = (int8_t)((tmp32 * SAMPLE_AREA_HEIGHT) >> 8);
+		sample = (int8_t)((tmp32 * height) >> 8);
 	}
 
-	return SAMPLE_AREA_Y_CENTER-sample;
+	return centerY-sample;
 }
 
 void sampleLine(int32_t x1, int32_t x2, int32_t y1, int32_t y2)
@@ -1037,15 +1268,52 @@ static void getSpecialMinMax8(sample_t *s, int32_t index, int32_t scanEnd, int8_
 	*max8 = maxVal;
 }
 
-static void getSampleDataPeak(sample_t *s, int32_t index, int32_t length, int16_t *outMin, int16_t *outMax)
+static void getSampleDataPeak(sample_t *s, int32_t index, int32_t length, int32_t channel, int32_t centerY, int32_t height, int16_t *outMin, int16_t *outMax)
 {
 	int8_t min8, max8;
 	int16_t min16, max16;
 
 	if (length == 0 || s->dataPtr == NULL || s->length <= 0)
 	{
-		*outMin = SAMPLE_AREA_Y_CENTER;
-		*outMax = SAMPLE_AREA_Y_CENTER;
+		*outMin = centerY;
+		*outMax = centerY;
+		return;
+	}
+
+	if (s->flags & SAMPLE_STEREO) // scan every other sample (interleaved L/R frames)
+	{
+		if (s->flags & SAMPLE_16BIT)
+		{
+			const int16_t *smpPtr16 = (int16_t *)s->dataPtr;
+			int16_t minVal =  32767;
+			int16_t maxVal = -32768;
+
+			for (int32_t i = 0; i < length; i++)
+			{
+				const int16_t smp16 = smpPtr16[((index+i)*2)+channel];
+				if (smp16 < minVal) minVal = smp16;
+				if (smp16 > maxVal) maxVal = smp16;
+			}
+
+			*outMin = centerY - ((minVal * height) >> 16);
+			*outMax = centerY - ((maxVal * height) >> 16);
+		}
+		else // 8-bit
+		{
+			int8_t minVal =  127;
+			int8_t maxVal = -128;
+
+			for (int32_t i = 0; i < length; i++)
+			{
+				const int8_t smp8 = s->dataPtr[((index+i)*2)+channel];
+				if (smp8 < minVal) minVal = smp8;
+				if (smp8 > maxVal) maxVal = smp8;
+			}
+
+			*outMin = centerY - ((minVal * height) >> 8);
+			*outMax = centerY - ((maxVal * height) >> 8);
+		}
+
 		return;
 	}
 
@@ -1062,14 +1330,14 @@ static void getSampleDataPeak(sample_t *s, int32_t index, int32_t length, int16_
 			if (s->flags & SAMPLE_16BIT)
 			{
 				getSpecialMinMax16(s, index, scanEnd, &min16, &max16);
-				*outMin = SAMPLE_AREA_Y_CENTER - ((min16 * SAMPLE_AREA_HEIGHT) >> 16);
-				*outMax = SAMPLE_AREA_Y_CENTER - ((max16 * SAMPLE_AREA_HEIGHT) >> 16);
+				*outMin = centerY - ((min16 * height) >> 16);
+				*outMax = centerY - ((max16 * height) >> 16);
 			}
 			else // 8-bit
 			{
 				getSpecialMinMax8(s, index, scanEnd, &min8, &max8);
-				*outMin = SAMPLE_AREA_Y_CENTER - ((min8 * SAMPLE_AREA_HEIGHT) >> 8);
-				*outMax = SAMPLE_AREA_Y_CENTER - ((max8 * SAMPLE_AREA_HEIGHT) >> 8);
+				*outMin = centerY - ((min8 * height) >> 8);
+				*outMax = centerY - ((max8 * height) >> 8);
 			}
 
 			return;
@@ -1080,32 +1348,19 @@ static void getSampleDataPeak(sample_t *s, int32_t index, int32_t length, int16_
 	{
 		const int16_t *smpPtr16 = (int16_t *)s->dataPtr;
 		getMinMax16(&smpPtr16[index], length, &min16, &max16);
-		*outMin = SAMPLE_AREA_Y_CENTER - ((min16 * SAMPLE_AREA_HEIGHT) >> 16);
-		*outMax = SAMPLE_AREA_Y_CENTER - ((max16 * SAMPLE_AREA_HEIGHT) >> 16);
+		*outMin = centerY - ((min16 * height) >> 16);
+		*outMax = centerY - ((max16 * height) >> 16);
 	}
 	else // 8-bit
 	{
 		getMinMax8(&s->dataPtr[index], length, &min8, &max8);
-		*outMin = SAMPLE_AREA_Y_CENTER - ((min8 * SAMPLE_AREA_HEIGHT) >> 8);
-		*outMax = SAMPLE_AREA_Y_CENTER - ((max8 * SAMPLE_AREA_HEIGHT) >> 8);
+		*outMin = centerY - ((min8 * height) >> 8);
+		*outMax = centerY - ((max8 * height) >> 8);
 	}
 }
 
-static void writeWaveform(void)
+static void drawWaveformChannel(sample_t *s, int32_t channel, int32_t centerY, int32_t height)
 {
-	// clear sample data area
-	memset(&video.frameBuffer[174 * SCREEN_W], 0, SAMPLE_AREA_WIDTH * SAMPLE_AREA_HEIGHT * sizeof (int32_t));
-
-	// draw center line
-	hLine(0, SAMPLE_AREA_Y_CENTER, SAMPLE_AREA_WIDTH, PAL_DESKTOP);
-
-	if (instr[editor.curInstr] == NULL || smpEd_ViewSize == 0)
-		return;
-
-	sample_t *s = &instr[editor.curInstr]->smp[editor.curSmp];
-	if (s->dataPtr == NULL || s->length <= 0)
-		return;
-
 	if (smpEd_ViewSize <= SAMPLE_AREA_WIDTH) // zoomed in (or 1:1)
 	{
 		for (int32_t x = 0; x <= SAMPLE_AREA_WIDTH; x++)
@@ -1118,8 +1373,8 @@ static void writeWaveform(void)
 
 			int32_t x1 = smpPos2Scr(currSmpPos);
 			int32_t x2 = smpPos2Scr(nextSmpPos);
-			int32_t y1 = getScaledSample(s, currSmpPos);
-			int32_t y2 = getScaledSample(s, nextSmpPos);
+			int32_t y1 = getScaledSample(s, currSmpPos, channel, centerY, height);
+			int32_t y2 = getScaledSample(s, nextSmpPos, channel, centerY, height);
 
 			x1 = CLAMP(x1, 0, SAMPLE_AREA_WIDTH-1);
 			x2 = CLAMP(x2, 0, SAMPLE_AREA_WIDTH-1);
@@ -1133,7 +1388,7 @@ static void writeWaveform(void)
 	}
 	else // zoomed out
 	{
-		const int32_t firstSamplePoint = getScaledSample(s, scr2SmpPos(0));
+		const int32_t firstSamplePoint = getScaledSample(s, scr2SmpPos(0), channel, centerY, height);
 
 		int32_t oldMin = firstSamplePoint;
 		int32_t oldMax = firstSamplePoint;
@@ -1150,7 +1405,7 @@ static void writeWaveform(void)
 			if (smpNum > 0)
 			{
 				int16_t min, max;
-				getSampleDataPeak(s, smpIdx, smpNum, &min, &max);
+				getSampleDataPeak(s, smpIdx, smpNum, channel, centerY, height, &min, &max);
 
 				if (x != 0)
 				{
@@ -1164,6 +1419,39 @@ static void writeWaveform(void)
 				oldMax = max;
 			}
 		}
+	}
+}
+
+static void writeWaveform(void)
+{
+	// clear sample data area
+	memset(&video.frameBuffer[174 * SCREEN_W], 0, SAMPLE_AREA_WIDTH * SAMPLE_AREA_HEIGHT * sizeof (int32_t));
+
+	if (instr[editor.curInstr] == NULL || smpEd_ViewSize == 0)
+	{
+		hLine(0, SAMPLE_AREA_Y_CENTER, SAMPLE_AREA_WIDTH, PAL_DESKTOP); // draw center line
+		return;
+	}
+
+	sample_t *s = &instr[editor.curInstr]->smp[editor.curSmp];
+	if (s->dataPtr == NULL || s->length <= 0)
+	{
+		hLine(0, SAMPLE_AREA_Y_CENTER, SAMPLE_AREA_WIDTH, PAL_DESKTOP); // draw center line
+		return;
+	}
+
+	if (s->flags & SAMPLE_STEREO) // draw both channels in their own half of the data area
+	{
+		hLine(0, STEREO_SAMPLE_L_CENTER, SAMPLE_AREA_WIDTH, PAL_DESKTOP); // left channel center line
+		hLine(0, STEREO_SAMPLE_R_CENTER, SAMPLE_AREA_WIDTH, PAL_DESKTOP); // right channel center line
+
+		drawWaveformChannel(s, 0, STEREO_SAMPLE_L_CENTER, STEREO_SAMPLE_HEIGHT);
+		drawWaveformChannel(s, 1, STEREO_SAMPLE_R_CENTER, STEREO_SAMPLE_HEIGHT);
+	}
+	else
+	{
+		hLine(0, SAMPLE_AREA_Y_CENTER, SAMPLE_AREA_WIDTH, PAL_DESKTOP); // draw center line
+		drawWaveformChannel(s, 0, SAMPLE_AREA_Y_CENTER, SAMPLE_AREA_HEIGHT);
 	}
 }
 
@@ -1737,6 +2025,12 @@ static bool cutRange(bool cropMode, int32_t r1, int32_t r2)
 
 	bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
 
+	if (s->flags & SAMPLE_STEREO)
+	{
+		okBoxThreadSafe(0, "System message", "Sorry, stereo samples can't be cut/resized in the sample editor yet!", NULL);
+		return false;
+	}
+
 	if (!cropMode)
 	{
 		if (editor.curInstr == 0 || s->dataPtr == NULL || s->length == 0)
@@ -1893,6 +2187,9 @@ static int32_t sampCopyThread(void *ptr)
 
 void sampCopy(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	sample_t *s = getCurSample();
 	if (s == NULL || s->dataPtr == NULL || s->length <= 0 || smpEd_Rx2 == 0 || smpEd_Rx2 < smpEd_Rx1)
 		return;
@@ -2095,6 +2392,9 @@ static int32_t sampPasteThread(void *ptr)
 
 void sampPaste(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	if (editor.curInstr == 0 || smpEd_Rx2 < smpEd_Rx1 || smpCopyBuff == NULL || smpCopySize == 0)
 		return;
 
@@ -2176,6 +2476,9 @@ void sampCrop(void)
 
 void sampXFade(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	int32_t y1, y2, d1, d2, d3;
 
 	sample_t *s = getCurSample();
@@ -2643,6 +2946,9 @@ void clearSample(void)
 
 void sampMinimize(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	sample_t *s = getCurSample();
 	if (s == NULL || s->dataPtr == NULL || s->length <= 0)
 		return;
@@ -2680,6 +2986,9 @@ void sampMinimize(void)
 
 void sampRepeatUp(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	sample_t *s = getCurSample();
 	if (s == NULL || s->dataPtr == NULL || s->length <= 0)
 		return;
@@ -2702,6 +3011,9 @@ void sampRepeatUp(void)
 
 void sampRepeatDown(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	sample_t *s = getCurSample();
 	if (s == NULL || s->dataPtr == NULL || s->length <= 0)
 		return;
@@ -2718,6 +3030,9 @@ void sampRepeatDown(void)
 
 void sampReplenUp(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	sample_t *s = getCurSample();
 	if (s == NULL || s->dataPtr == NULL || s->length <= 0)
 		return;
@@ -2734,6 +3049,9 @@ void sampReplenUp(void)
 
 void sampReplenDown(void)
 {
+	if (stereoEditNotSupported())
+		return;
+
 	int32_t loopLength;
 
 	sample_t *s = getCurSample();
@@ -3338,6 +3656,7 @@ void drawSampleEditorExt(void)
 	showPushButton(PB_SAMP_EXT_XCHG_SMP);
 	showPushButton(PB_SAMP_EXT_RESAMPLE);
 	showPushButton(PB_SAMP_EXT_MIX_SAMPLE);
+	showPushButton(PB_SAMP_EXT_LOOP_STRETCH);
 }
 
 void showSampleEditorExt(void)
@@ -3372,6 +3691,7 @@ void hideSampleEditorExt(void)
 	hidePushButton(PB_SAMP_EXT_XCHG_SMP);
 	hidePushButton(PB_SAMP_EXT_RESAMPLE);
 	hidePushButton(PB_SAMP_EXT_MIX_SAMPLE);
+	hidePushButton(PB_SAMP_EXT_LOOP_STRETCH);
 
 	ui.scopesShown = true;
 	drawScopeFramework();

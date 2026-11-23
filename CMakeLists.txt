@@ -20,6 +20,13 @@ file(GLOB ft2-clone_SRC
 	"${ft2-clone_SOURCE_DIR}/src/smploaders/*.c"
 )
 
+if(WIN32)
+	list(APPEND ft2-clone_SRC "${ft2-clone_SOURCE_DIR}/src/ft2_vst3.cpp")
+	list(APPEND ft2-clone_SRC "${ft2-clone_SOURCE_DIR}/src/ft2_vst2.cpp")
+else()
+	list(APPEND ft2-clone_SRC "${ft2-clone_SOURCE_DIR}/src/ft2_vst3_stub.c")
+endif()
+
 add_executable(ft2-clone ${ft2-clone_SRC})
 target_include_directories(ft2-clone SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
 

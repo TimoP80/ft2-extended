@@ -10,6 +10,7 @@ enum
 	STEREO_SAMPLE_READ_LEFT_CHANNEL = 1,
 	STEREO_SAMPLE_READ_RIGHT_CHANNEL = 2,
 	STEREO_SAMPLE_MIX_TO_MONO = 3,
+	STEREO_SAMPLE_KEEP_STEREO = 4, // load as interleaved L/R sample
 };
 
 void normalizeSigned32Bit(int32_t *sampleData, uint32_t sampleLength);

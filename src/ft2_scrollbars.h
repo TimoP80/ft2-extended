@@ -50,6 +50,9 @@ enum // SCROLLBARS
 	SB_MIDI_INPUT_SCROLL,
 #endif
 
+	// Config VST3
+	SB_VST3_PLUGIN_SCROLL,
+
 	// Disk Op.
 	SB_DISKOP_LIST,
 

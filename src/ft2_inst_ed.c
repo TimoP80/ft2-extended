@@ -22,6 +22,18 @@
 #include "ft2_bmp.h"
 #include "ft2_structs.h"
 #include "ft2_bmp.h"
+#include "ft2_inst_ed.h"
+
+// VST3 instrument plugin list popup (shown inside the extended instrument editor)
+#define VST3_INST_LIST_X 3
+#define VST3_INST_LIST_Y 92
+#define VST3_INST_LIST_W 288
+#define VST3_INST_LIST_H 81
+#define VST3_INST_LIST_ROWS 7
+#define VST3_INST_LIST_ROW_H 11
+
+static bool vst3InstListShown = false;
+static int32_t vst3InstListScroll = 0;
 
 #ifdef _MSC_VER
 #pragma pack(push)
@@ -2181,6 +2193,12 @@ void updateInstEditor(void)
 	// update instrument editor extension
 	if (ui.instEditorExtShown)
 	{
+		if (vst3InstListShown) // close the plugin list popup on instrument change
+		{
+			vst3InstListShown = false;
+			drawInstEditorExt();
+		}
+
 		checkBoxes[CB_INST_EXT_MIDI].checked = ins->midiOn ? true : false;
 		checkBoxes[CB_INST_EXT_MUTE].checked = ins->mute   ? true : false;
 
@@ -2621,26 +2639,109 @@ void cbInstMuteComputer(void)
 	setSongModifiedFlag();
 }
 
+static int32_t getVST3InstrumentListCount(void)
+{
+	// entry 0 is "(Off)", the following entries are the instrument plugins
+	const uint32_t pluginCount = vst3GetInstrumentPluginCount();
+	return pluginCount >= 0x7FFFFFFF ? 0x7FFFFFFF : (int32_t)pluginCount + 1;
+}
+
+static void clampVST3InstrumentListScroll(void)
+{
+	const int32_t maxScroll = getVST3InstrumentListCount() - VST3_INST_LIST_ROWS;
+
+	if (maxScroll <= 0)
+		vst3InstListScroll = 0;
+	else if (vst3InstListScroll > maxScroll)
+		vst3InstListScroll = maxScroll;
+
+	if (vst3InstListScroll < 0)
+		vst3InstListScroll = 0;
+}
+
+static void drawVST3InstrumentList(void)
+{
+	char name[96];
+	const int32_t count = getVST3InstrumentListCount();
+	const int32_t assigned = vst3GetAssignedInstrument((uint8_t)editor.curInstr);
+
+	clampVST3InstrumentListScroll();
+
+	drawFramework(VST3_INST_LIST_X, VST3_INST_LIST_Y, VST3_INST_LIST_W, VST3_INST_LIST_H, FRAMEWORK_TYPE1);
+
+	const uint16_t rowX = VST3_INST_LIST_X + 4;
+	const uint16_t rowY = VST3_INST_LIST_Y + 2;
+	const uint16_t rowW = VST3_INST_LIST_W - 13;
+
+	for (int32_t i = 0; i < VST3_INST_LIST_ROWS; i++)
+	{
+		const int32_t listIndex = vst3InstListScroll + i;
+		if (listIndex >= count)
+			break;
+
+		const int32_t pluginIndex = listIndex - 1; // -1 = (Off)
+		const uint16_t y = (uint16_t)(rowY + (i * VST3_INST_LIST_ROW_H));
+
+		if (pluginIndex == assigned)
+			fillRect(rowX, y, rowW, VST3_INST_LIST_ROW_H - 1, PAL_BOXSLCT);
+
+		if (pluginIndex < 0)
+			strcpy(name, "(Off)");
+		else if (!vst3GetInstrumentPluginLabel((uint32_t)pluginIndex, name, sizeof(name)))
+			strcpy(name, "(Unavailable)");
+
+		textOutClipX(rowX + 2, y, PAL_FORGRND, name, rowX + rowW - 2);
+	}
+
+	// scroll indicator
+	if (count > VST3_INST_LIST_ROWS)
+	{
+		const uint16_t barX = VST3_INST_LIST_X + VST3_INST_LIST_W - 8;
+		const uint16_t barY = rowY;
+		const uint16_t barH = VST3_INST_LIST_ROWS * VST3_INST_LIST_ROW_H;
+		const int32_t maxScroll = count - VST3_INST_LIST_ROWS;
+
+		fillRect(barX, barY, 5, barH, PAL_DSKTOP1);
+
+		uint16_t thumbH = (uint16_t)((barH * VST3_INST_LIST_ROWS) / count);
+		if (thumbH < 6)
+			thumbH = 6;
+
+		const uint16_t thumbY = (uint16_t)(barY + ((barH - thumbH) * vst3InstListScroll) / maxScroll);
+		fillRect(barX + 1, thumbY, 3, thumbH, PAL_BUTTON2);
+	}
+}
+
 void drawInstEditorExt(void)
 {
 	instr_t *ins = instr[editor.curInstr];
+	char pluginName[96];
+	const int32_t pluginIndex = vst3GetAssignedInstrument((uint8_t)editor.curInstr);
 
 	drawFramework(0,  92, 291, 17, FRAMEWORK_TYPE1);
 	drawFramework(0, 109, 291, 19, FRAMEWORK_TYPE1);
 	drawFramework(0, 128, 291, 45, FRAMEWORK_TYPE1);
 
-	textOutShadow(4,   96,  PAL_FORGRND, PAL_DSKTOP2, "Instrument Editor Extension:");
+	textOutShadow(4,   96,  PAL_FORGRND, PAL_DSKTOP2, "VST instrument:");
+	if (pluginIndex < 0)
+		strcpy(pluginName, "Off");
+	else if (!vst3GetInstrumentPluginName((uint32_t)pluginIndex, pluginName, sizeof(pluginName)))
+		strcpy(pluginName, "Unavailable");
+	textOutClipX(104, 96, PAL_FORGRND, pluginName, 204);
+	drawFramework(207, 94, 43, 13, FRAMEWORK_TYPE1);
+	textOutShadow(211, 96, PAL_FORGRND, PAL_DSKTOP2, "Editor");
+	drawFramework(253, 94, 35, 13, FRAMEWORK_TYPE1);
+	textOutShadow((uint16_t)(253 + ((35 - textWidth("List")) / 2)), 96, PAL_FORGRND, PAL_DSKTOP2, "List");
 	textOutShadow(20,  114, PAL_FORGRND, PAL_DSKTOP2, "Instrument MIDI enable");
 	textOutShadow(189, 114, PAL_FORGRND, PAL_DSKTOP2, "Mute computer");
-	textOutShadow(4,   132, PAL_FORGRND, PAL_DSKTOP2, "MIDI transmit channel");
-	textOutShadow(4,   146, PAL_FORGRND, PAL_DSKTOP2, "MIDI program");
+	textOutShadow(4,   133, PAL_FORGRND, PAL_DSKTOP2, "MIDI transmit channel");
+	textOutShadow(4,   147, PAL_FORGRND, PAL_DSKTOP2, "MIDI program");
 	textOutShadow(4,   160, PAL_FORGRND, PAL_DSKTOP2, "Bender range (halftones)");
 
 	if (ins == NULL)
 	{
 		checkBoxes[CB_INST_EXT_MIDI].checked = false;
 		checkBoxes[CB_INST_EXT_MUTE].checked = false;
-
 		setScrollBarPos(SB_INST_EXT_MIDI_CH,   0, DONT_TRIGGER_CALLBACK);
 		setScrollBarPos(SB_INST_EXT_MIDI_PRG,  0, DONT_TRIGGER_CALLBACK);
 		setScrollBarPos(SB_INST_EXT_MIDI_BEND, 0, DONT_TRIGGER_CALLBACK);
@@ -2672,6 +2773,9 @@ void drawInstEditorExt(void)
 	drawMIDICh();
 	drawMIDIPrg();
 	drawMIDIBend();
+
+	if (vst3InstListShown)
+		drawVST3InstrumentList();
 }
 
 void showInstEditorExt(void)
@@ -2701,9 +2805,175 @@ void hideInstEditorExt(void)
 	hidePushButton(PB_INST_EXT_MIDI_BEND_DOWN);
 	hidePushButton(PB_INST_EXT_MIDI_BEND_UP);
 
+	vst3InstListShown = false;
+
 	ui.instEditorExtShown = false;
 	ui.scopesShown = true;
 	drawScopeFramework();
+}
+
+// name the instrument slot after the assigned plugin, so the instrument text
+// field tells the user which slots are driven by a VST3 instrument
+static void updateVST3InstrumentName(void)
+{
+	const int32_t pluginIndex = vst3GetAssignedInstrument((uint8_t)editor.curInstr);
+	if (pluginIndex < 0 || editor.curInstr == 0)
+		return;
+
+	char pluginName[96];
+	if (!vst3GetInstrumentPluginName((uint32_t)pluginIndex, pluginName, sizeof (pluginName)))
+		return;
+
+	char *instrName = song.instrName[editor.curInstr];
+	if (strcmp(instrName, pluginName) == 0)
+		return;
+
+	snprintf(instrName, sizeof (song.instrName[0]), "%.22s", pluginName);
+
+	updateTextBoxPointers();
+	if (ui.instrSwitcherShown)
+		updateInstrumentSwitcher();
+
+	setSongModifiedFlag();
+}
+
+static int32_t getNextVST3InstrumentPluginIndex(int32_t current, int32_t direction)
+{
+	uint32_t pluginCount = vst3GetInstrumentPluginCount();
+	if (pluginCount == 0)
+		return -1;
+
+	if (current < 0)
+		current = -1;
+
+	int32_t next = current + direction;
+	if (next < -1)
+		next = (int32_t)pluginCount - 1;
+	else if (next >= (int32_t)pluginCount)
+		next = -1;
+
+	return next;
+}
+
+bool testVST3InstrumentSelectorMouseDown(void)
+{
+	// the instrument name area (the Editor/List buttons have their own handlers)
+	if (!ui.instEditorExtShown || mouse.y < 94 || mouse.y > 110 || mouse.x < 3 || mouse.x > 204)
+		return false;
+
+	// clicking on the instrument name area cycles through VST3 plugins
+	int32_t current = vst3GetAssignedInstrument((uint8_t)editor.curInstr);
+	int32_t next = getNextVST3InstrumentPluginIndex(current, 1);
+
+	if (vst3AssignInstrument((uint8_t)editor.curInstr, next))
+	{
+		updateVST3InstrumentName();
+	}
+	else
+	{
+		char loadErr[256];
+		vst3GetLastLoadError(loadErr, sizeof(loadErr));
+		if (loadErr[0] != '\0')
+			okBox(0, "Plugin", loadErr, NULL);
+		else
+			okBox(0, "Plugin", "Could not load this instrument plugin.", NULL);
+	}
+
+	drawInstEditorExt();
+	return true;
+}
+
+bool testVST3InstrumentEditorMouseDown(void)
+{
+	if (!ui.instEditorExtShown || mouse.y < 94 || mouse.y > 110 || mouse.x < 207 || mouse.x > 250)
+		return false;
+
+	if (vst3GetAssignedInstrument((uint8_t)editor.curInstr) < 0)
+	{
+		okBox(0, "VST instrument", "Select an instrument plugin first, then click Editor.", NULL);
+		return true;
+	}
+
+	if (!vst3OpenInstrumentEditor((uint8_t)editor.curInstr))
+		okBox(0, "VST instrument", "Could not open the plugin's editor window.", NULL);
+
+	return true;
+}
+
+bool testVST3InstrumentListMouseDown(void)
+{
+	if (!ui.instEditorExtShown)
+		return false;
+
+	if (!vst3InstListShown)
+	{
+		// "List" button
+		if (mouse.x < 253 || mouse.x > 288 || mouse.y < 94 || mouse.y > 110)
+			return false;
+
+		if (vst3GetInstrumentPluginCount() == 0)
+		{
+			okBox(0, "VST instruments", "No VST instrument plugins found. Scan for plugins in Config -> VST first.", NULL);
+			return true;
+		}
+
+		vst3InstListScroll = 0;
+		clampVST3InstrumentListScroll();
+		vst3InstListShown = true;
+		drawVST3InstrumentList();
+		return true;
+	}
+
+	// popup is open, a click outside of it closes it
+	if (mouse.x < VST3_INST_LIST_X || mouse.x >= VST3_INST_LIST_X + VST3_INST_LIST_W ||
+		mouse.y < VST3_INST_LIST_Y || mouse.y >= VST3_INST_LIST_Y + VST3_INST_LIST_H)
+	{
+		vst3InstListShown = false;
+		drawInstEditorExt();
+		return true;
+	}
+
+	const int32_t rowIndex = (int32_t)(mouse.y - (VST3_INST_LIST_Y + 2)) / VST3_INST_LIST_ROW_H;
+	const int32_t listIndex = vst3InstListScroll + rowIndex;
+	if (rowIndex >= 0 && rowIndex < VST3_INST_LIST_ROWS && listIndex < getVST3InstrumentListCount())
+	{
+		if (editor.curInstr == 0)
+		{
+			okBox(0, "VST instrument", "Select an instrument slot first.", NULL);
+		}
+		else
+		{
+			const int32_t pluginIndex = listIndex - 1; // -1 = (Off)
+			if (vst3AssignInstrument((uint8_t)editor.curInstr, pluginIndex))
+			{
+				updateVST3InstrumentName();
+			}
+			else
+			{
+				char loadErr[256];
+				vst3GetLastLoadError(loadErr, sizeof(loadErr));
+				if (loadErr[0] != '\0')
+					okBox(0, "Plugin", loadErr, NULL);
+				else
+					okBox(0, "Plugin", "Could not load this instrument plugin.", NULL);
+			}
+		}
+	}
+
+	vst3InstListShown = false;
+	drawInstEditorExt();
+	return true;
+}
+
+bool vst3InstrumentListMouseWheel(bool directionUp)
+{
+	if (!ui.instEditorExtShown || !vst3InstListShown)
+		return false;
+
+	vst3InstListScroll += directionUp ? -1 : 1;
+	clampVST3InstrumentListScroll();
+	drawVST3InstrumentList();
+	return true;
 }
 
 void toggleInstEditorExt(void)
@@ -3012,6 +3282,13 @@ static int32_t saveInstrThread(void *ptr)
 			dst->loopLength <<= 1;
 		}
 
+		if (s->flags & SAMPLE_STEREO) // file sample counts cover both interleaved channels
+		{
+			dst->length <<= 1;
+			dst->loopStart <<= 1;
+			dst->loopLength <<= 1;
+		}
+
 		dst->volume = s->volume;
 		dst->finetune = s->finetune;
 		dst->flags = s->flags;
@@ -3044,11 +3321,11 @@ static int32_t saveInstrThread(void *ptr)
 		if (s->dataPtr != NULL && s->length > 0)
 		{
 			unfixSample(s);
-			samp2Delta(s->dataPtr, s->length, s->flags);
+			samp2Delta(s->dataPtr, SAMPLE_LENGTH_SAMPLES(s), s->flags);
 
 			result = fwrite(s->dataPtr, 1, SAMPLE_LENGTH_BYTES(s), f);
 
-			delta2Samp(s->dataPtr, s->length, s->flags);
+			delta2Samp(s->dataPtr, SAMPLE_LENGTH_SAMPLES(s), s->flags);
 			fixSample(s);
 
 			if (result != (size_t)SAMPLE_LENGTH_BYTES(s)) // write not OK
@@ -3291,19 +3568,14 @@ static int32_t loadInstrThread(void *ptr)
 				if (sampleLengthInBytes < lengthInFile)
 					fseek(f, lengthInFile-sampleLengthInBytes, SEEK_CUR);
 
-				delta2Samp(s->dataPtr, s->length, s->flags); // stereo samples are handled here
+				delta2Samp(s->dataPtr, s->length, s->flags);
 
-				// check if it was a stereo sample
+				// stereo sample: the file's sample counts cover both interleaved channels
 				if (stereoSample)
 				{
-					s->flags &= ~SAMPLE_STEREO;
-
 					s->length >>= 1;
 					s->loopStart >>= 1;
 					s->loopLength >>= 1;
-
-					reallocateSmpData(s, s->length, sample16Bit);
-					stereoWarning = true;
 				}
 			}
 		}

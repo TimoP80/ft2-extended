@@ -135,8 +135,10 @@ bool loadMP3(FILE *f, uint32_t filesize)
 		return false;
 	}
 
+	const bool keepStereo = (mp3IsStereo && stereoAction == STEREO_SAMPLE_KEEP_STEREO);
+
 	uint32_t sampleLength = (uint32_t)info.samples;
-	if (mp3IsStereo)
+	if (mp3IsStereo && !keepStereo)
 		sampleLength >>= 1;
 
 	if (!allocateSmpData(s, sampleLength, true))
@@ -146,7 +148,12 @@ bool loadMP3(FILE *f, uint32_t filesize)
 	}
 
 	int16_t *dst16 = (int16_t *)s->dataPtr;
-	if (mp3IsStereo)
+	if (keepStereo)
+	{
+		// keep the interleaved L/R frames as-is
+		memcpy(dst16, info.buffer, sampleLength * sizeof (int16_t));
+	}
+	else if (mp3IsStereo)
 	{
 		if (stereoAction == STEREO_SAMPLE_MIX_TO_MONO)
 		{
@@ -177,7 +184,10 @@ bool loadMP3(FILE *f, uint32_t filesize)
 	s->volume = 64;
 	s->panning = 128;
 	s->flags = SAMPLE_16BIT;
-	s->length = sampleLength;
+	if (keepStereo)
+		s->flags |= SAMPLE_STEREO;
+
+	s->length = keepStereo ? (int32_t)(sampleLength >> 1) : (int32_t)sampleLength;
 	setSampleC4Hz(s, info.hz);
 
 	return true;

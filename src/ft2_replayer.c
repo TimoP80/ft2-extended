@@ -27,6 +27,7 @@
 #include "ft2_sample_loader.h"
 #include "ft2_tables.h"
 #include "ft2_structs.h"
+#include "ft2_vst3.h"
 #include "mixer/ft2_windowed_sinc.h"
 
 static uint32_t logTab[4*12*16], frequencyMulFactor, frequencyDivFactor;
@@ -38,6 +39,8 @@ static note_t nilPatternLine[MAX_CHANNELS];
 typedef void (*volColumnEfxRoutine)(channel_t *ch);
 typedef void (*volColumnEfxRoutine2)(channel_t *ch, uint8_t *volColumnData);
 typedef void (*efxRoutine)(channel_t *ch, uint8_t param);
+
+static void vst3KeyOffChannel(channel_t *ch);
 
 // globally accessed
 int8_t playMode = 0;
@@ -110,9 +113,15 @@ void resetChannels(void)
 	if (audioWasntLocked)
 		lockAudio();
 
+	// release the notes VST3 instruments are still holding before the channel
+	// state that tracks them gets wiped
+	channel_t *ch = channel;
+	for (int32_t i = 0; i < MAX_CHANNELS; i++, ch++)
+		vst3KeyOffChannel(ch);
+
 	memset(channel, 0, sizeof (channel));
 
-	channel_t *ch = channel;
+	ch = channel;
 	for (int32_t i = 0; i < MAX_CHANNELS; i++, ch++)
 	{
 		ch->instrPtr = instr[0];
@@ -408,6 +417,45 @@ void triggerInstrument(channel_t *ch)
 	}
 }
 
+// VST3 instruments keep playing a note until they receive a note-off (unlike FT2
+// samples, which end on their own). The replayer must therefore key the plugin off
+// explicitly whenever the channel's note is cut. The note-off is addressed to the
+// plug-in and note id that actually started the note, so it still reaches the right
+// voice if the channel has switched to another instrument since then.
+static void vst3KeyOffChannel(channel_t *ch)
+{
+	const int32_t noteId = ch->vst3NoteId;
+	const uint8_t instrNum = ch->vst3InstrNum;
+	const uint8_t note = ch->vst3NoteNum;
+
+	ch->vst3NoteId = 0;
+	ch->vst3InstrNum = 0;
+	ch->vst3NoteNum = 0;
+
+	if (noteId != 0 && instrNum > 0)
+		vst3InstrumentNoteOff(instrNum, note, noteId);
+}
+
+// keys the channel's note on its assigned VST3 instrument (if any)
+static void vst3NoteOnChannel(channel_t *ch)
+{
+	ch->vst3NoteId = 0;
+	ch->vst3InstrNum = 0;
+	ch->vst3NoteNum = 0;
+
+	if (ch->instrNum == 0 || vst3GetAssignedInstrument(ch->instrNum) < 0)
+		return;
+
+	const uint8_t note = (uint8_t)CLAMP((int32_t)ch->noteNum + 11, 0, 127);
+	const int32_t noteId = vst3InstrumentNoteOn(ch->instrNum, note, 1.0f);
+	if (noteId <= 0)
+		return;
+
+	ch->vst3NoteId = noteId;
+	ch->vst3InstrNum = ch->instrNum;
+	ch->vst3NoteNum = note;
+}
+
 void keyOff(channel_t *ch)
 {
 	ch->keyOff = true;
@@ -432,6 +480,9 @@ void keyOff(channel_t *ch)
 		if (ch->panEnvTick >= (uint16_t)ins->panEnvPoints[ch->panEnvPos][0])
 			ch->panEnvTick = ins->panEnvPoints[ch->panEnvPos][0] - 1;
 	}
+
+	// VST3 note-off for assigned VST3 instruments
+	vst3KeyOffChannel(ch);
 }
 
 void calcReplayerVars(int32_t referenceFt2AudioFreq, int32_t audioFreq)
@@ -554,7 +605,19 @@ void triggerNote(uint8_t note, uint8_t efx, uint8_t efxData, channel_t *ch)
 			return; // if still no note, exit from routine
 	}
 
+	// A new note implicitly cuts the previous one on this channel. FT2 samples stop
+	// by themselves, but an assigned VST3 instrument has to be sent a note-off first.
+	vst3KeyOffChannel(ch);
+
 	ch->noteNum = note;
+
+	if (note > 96) // non-FT2 sanity check
+		note = 96;
+
+	// The VST3 note-on is independent of the sample data below, so it must be sent
+	// before any early exit taken for sample reasons (e.g. an instrument that is
+	// transposed out of range would otherwise swallow the note silently).
+	vst3NoteOnChannel(ch);
 
 	ASSERT(ch->instrNum <= 130);
 	instr_t *ins = instr[ch->instrNum];
@@ -563,9 +626,6 @@ void triggerNote(uint8_t note, uint8_t efx, uint8_t efxData, channel_t *ch)
 
 	ch->instrPtr = ins;
 	ch->mute = ins->mute;
-
-	if (note > 96) // non-FT2 sanity check
-		note = 96;
 
 	ch->smpNum = ins->note2SampleLUT[note-1] & 0xF; // FT2 doesn't mask here, but let's do it anyway
 	sample_t *s = &ins->smp[ch->smpNum];
@@ -721,6 +781,8 @@ static void noteCut0(channel_t *ch, uint8_t param)
 		ch->realVol = 0;
 		ch->outVol = 0;
 		ch->status |= CS_UPDATE_VOL + CS_USE_QUICK_VOLRAMP;
+
+		vst3KeyOffChannel(ch); // a cut note must also stop on a VST3 instrument
 	}
 }
 
@@ -2180,6 +2242,8 @@ static void noteCut(channel_t *ch, uint8_t param)
 	{
 		ch->outVol = ch->realVol = 0;
 		ch->status |= CS_UPDATE_VOL + CS_USE_QUICK_VOLRAMP;
+
+		vst3KeyOffChannel(ch); // a cut note must also stop on a VST3 instrument
 	}
 }
 
@@ -2510,50 +2574,44 @@ void delta2Samp(int8_t *p, int32_t length, uint8_t smpFlags)
 	bool sample16Bit = !!(smpFlags & SAMPLE_16BIT);
 	bool stereo = !!(smpFlags & SAMPLE_STEREO);
 
-	if (stereo)
+	if (stereo) // interleaved L/R frames
 	{
-		length >>= 1;
-
 		if (sample16Bit)
 		{
-			int16_t *p16L = (int16_t *)p;
-			int16_t *p16R = (int16_t *)p + length;
+			int16_t *p16 = (int16_t *)p;
 
 			int16_t olds16L = 0;
 			int16_t olds16R = 0;
 
-			for (int32_t i = 0; i < length; i++)
+			for (int32_t i = 0; i < length; i += 2)
 			{
-				const int16_t news16L = p16L[i] + olds16L;
-				p16L[i] = news16L;
+				const int16_t news16L = (int16_t)(p16[i+0] + olds16L);
+				const int16_t news16R = (int16_t)(p16[i+1] + olds16R);
+
+				p16[i+0] = news16L;
+				p16[i+1] = news16R;
+
 				olds16L = news16L;
-
-				const int16_t news16R = p16R[i] + olds16R;
-				p16R[i] = news16R;
 				olds16R = news16R;
-
-				p16L[i] = (int16_t)((olds16L + olds16R) >> 1);
 			}
 		}
 		else // 8-bit
 		{
-			int8_t *p8L = (int8_t *)p;
-			int8_t *p8R = (int8_t *)p + length;
+			int8_t *p8 = (int8_t *)p;
 
 			int8_t olds8L = 0;
 			int8_t olds8R = 0;
 
-			for (int32_t i = 0; i < length; i++)
+			for (int32_t i = 0; i < length; i += 2)
 			{
-				const int8_t news8L = p8L[i] + olds8L;
-				p8L[i] = news8L;
+				const int8_t news8L = (int8_t)(p8[i+0] + olds8L);
+				const int8_t news8R = (int8_t)(p8[i+1] + olds8R);
+
+				p8[i+0] = news8L;
+				p8[i+1] = news8R;
+
 				olds8L = news8L;
-
-				const int8_t news8R = p8R[i] + olds8R;
-				p8R[i] = news8R;
 				olds8R = news8R;
-
-				p8L[i] = (int8_t)((olds8L + olds8R) >> 1);
 			}
 		}
 	}
@@ -2588,7 +2646,49 @@ void delta2Samp(int8_t *p, int32_t length, uint8_t smpFlags)
 
 void samp2Delta(int8_t *p, int32_t length, uint8_t smpFlags)
 {
-	if (smpFlags & SAMPLE_16BIT)
+	const bool sample16Bit = !!(smpFlags & SAMPLE_16BIT);
+
+	if (smpFlags & SAMPLE_STEREO) // interleaved L/R frames, one delta chain per channel
+	{
+		if (sample16Bit)
+		{
+			int16_t *p16 = (int16_t *)p;
+
+			int16_t newS16L = 0, newS16R = 0;
+			for (int32_t i = 0; i < length; i += 2)
+			{
+				const int16_t oldS16L = p16[i+0];
+				const int16_t oldS16R = p16[i+1];
+
+				p16[i+0] = (int16_t)(oldS16L - newS16L);
+				p16[i+1] = (int16_t)(oldS16R - newS16R);
+
+				newS16L = oldS16L;
+				newS16R = oldS16R;
+			}
+		}
+		else // 8-bit
+		{
+			int8_t *p8 = (int8_t *)p;
+
+			int8_t newS8L = 0, newS8R = 0;
+			for (int32_t i = 0; i < length; i += 2)
+			{
+				const int8_t oldS8L = p8[i+0];
+				const int8_t oldS8R = p8[i+1];
+
+				p8[i+0] = (int8_t)(oldS8L - newS8L);
+				p8[i+1] = (int8_t)(oldS8R - newS8R);
+
+				newS8L = oldS8L;
+				newS8R = oldS8R;
+			}
+		}
+
+		return;
+	}
+
+	if (sample16Bit)
 	{
 		int16_t *p16 = (int16_t *)p;
 
@@ -2612,6 +2712,43 @@ void samp2Delta(int8_t *p, int32_t length, uint8_t smpFlags)
 			newS8 = oldS8;
 		}
 	}
+}
+
+// Converts planar stereo sample data (all left frames, then all right frames)
+// to the interleaved layout used in RAM. Needs temporary memory of the same size.
+bool stereoPlanarToInterleaved(int8_t *p, int32_t numFrames, bool sample16Bit)
+{
+	const int32_t elemSize = sample16Bit ? 2 : 1;
+	const size_t totalBytes = (size_t)numFrames * 2 * elemSize;
+
+	int8_t *tmp = (int8_t *)malloc(totalBytes);
+	if (tmp == NULL)
+		return false;
+
+	if (sample16Bit)
+	{
+		const int16_t *src16 = (const int16_t *)p;
+		int16_t *dst16 = (int16_t *)tmp;
+
+		for (int32_t i = 0; i < numFrames; i++)
+		{
+			dst16[i*2+0] = src16[i];
+			dst16[i*2+1] = src16[numFrames+i];
+		}
+	}
+	else
+	{
+		for (int32_t i = 0; i < numFrames; i++)
+		{
+			tmp[i*2+0] = p[i];
+			tmp[i*2+1] = p[numFrames+i];
+		}
+	}
+
+	memcpy(p, tmp, totalBytes);
+	free(tmp);
+
+	return true;
 }
 
 bool allocateInstr(int16_t insNum)
@@ -2841,48 +2978,21 @@ void updateChanNums(void)
 
 void conv8BitSample(int8_t *p, int32_t length, bool stereo) // changes sample sign
 {
-	if (stereo)
-	{
-		length >>= 1;
+	// works the same for mono and interleaved stereo data, length is sample count
+	(void)stereo;
 
-		int8_t *p2 = &p[length];
-		for (int32_t i = 0; i < length; i++)
-		{
-			const int8_t l = p[i] ^ 0x80;
-			const int8_t r = p2[i] ^ 0x80;
-
-			p[i] = (int8_t)((l + r) >> 1);
-		}
-	}
-	else
-	{
-		for (int32_t i = 0; i < length; i++)
-			p[i] ^= 0x80;
-	}
+	for (int32_t i = 0; i < length; i++)
+		p[i] ^= 0x80;
 }
 
 void conv16BitSample(int8_t *p, int32_t length, bool stereo) // changes sample sign
 {
-	int16_t *p16_1 = (int16_t *)p;
+	// works the same for mono and interleaved stereo data, length is sample count
+	(void)stereo;
 
-	if (stereo)
-	{
-		length >>= 1;
-
-		int16_t *p16_2 = (int16_t *)p + length;
-		for (int32_t i = 0; i < length; i++)
-		{
-			const int16_t l = p16_1[i] ^ 0x8000;
-			const int16_t r = p16_2[i] ^ 0x8000;
-
-			p16_1[i] = (int16_t)((l + r) >> 1);
-		}
-	}
-	else
-	{
-		for (int32_t i = 0; i < length; i++)
-			p16_1[i] ^= 0x8000;
-	}
+	int16_t *p16 = (int16_t *)p;
+	for (int32_t i = 0; i < length; i++)
+		p16[i] ^= 0x8000;
 }
 
 void closeReplayer(void)
@@ -3013,6 +3123,10 @@ void stopPlaying(void)
 		// safely kills all voices
 		lockMixerCallback();
 		unlockMixerCallback();
+
+		// panic: VST3 instruments keep sounding until they get a note-off, so make
+		// sure nothing is left hanging even if a channel's note state was lost
+		vst3AllNotesOff();
 	}
 	else
 	{
@@ -3050,7 +3164,17 @@ void playTone(uint8_t chNum, uint8_t insNum, uint8_t note, int8_t vol, uint16_t 
 {
 	instr_t *ins = instr[insNum];
 	if (ins == NULL)
-		return;
+	{
+		/* An instrument slot that was never used has no instrument struct allocated.
+		** A VST3 instrument still makes sound without any sample data, and pattern
+		** playback already falls back to the empty placeholder instrument for such
+		** slots. Do the same here so keyboard jamming reaches the plugin as well.
+		*/
+		if (insNum == 0 || vst3GetAssignedInstrument(insNum) < 0)
+			return;
+
+		ins = instr[0]; // empty placeholder instrument
+	}
 
 	ASSERT(chNum < MAX_CHANNELS && insNum <= MAX_INST && note <= NOTE_OFF);
 	channel_t *ch = &channel[chNum];
@@ -3064,8 +3188,22 @@ void playTone(uint8_t chNum, uint8_t insNum, uint8_t note, int8_t vol, uint16_t 
 		sample_t *s = &ins->smp[ins->note2SampleLUT[note-1] & 0xF];
 
 		int16_t finalNote = (int16_t)note + s->relativeNote;
-		if (s->dataPtr == NULL || s->length == 0 || finalNote <= 0 || finalNote >= 12*10)
-			return;
+
+		const bool hasSample = (s->dataPtr != NULL && s->length != 0);
+		if (hasSample)
+		{
+			if (finalNote <= 0 || finalNote >= 12*10)
+				return;
+		}
+		else
+		{
+			/* A VST3 instrument makes sound without any sample data, so key
+			** jamming (and other previews) must be allowed to reach the plugin
+			** even if the instrument slot has no samples loaded.
+			*/
+			if (vst3GetAssignedInstrument(insNum) < 0)
+				return;
+		}
 	}
 	// -------------------
 
@@ -3229,6 +3367,9 @@ void stopVoices(void)
 	{
 		lastChInstr[i].smpNum = 255;
 		lastChInstr[i].instrNum = 255;
+
+		// release any note that is still sounding on an assigned VST3 instrument
+		vst3KeyOffChannel(ch);
 
 		ch->copyOfInstrAndNote = 0;
 		ch->relativeNote = 0;

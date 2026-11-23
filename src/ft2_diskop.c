@@ -670,6 +670,8 @@ void diskOpSetFilename(uint8_t type, UNICHAR *pathU)
 				changeFilenameExt(modTmpFName, ".mod", PATH_MAX);
 			else if (editor.moduleSaveMode == MOD_SAVE_MODE_XM)
 				changeFilenameExt(modTmpFName, ".xm", PATH_MAX);
+			else if (editor.moduleSaveMode == MOD_SAVE_MODE_XMV)
+				changeFilenameExt(modTmpFName, ".xmv", PATH_MAX);
 			else if (editor.moduleSaveMode == MOD_SAVE_MODE_WAV)
 				changeFilenameExt(modTmpFName, ".wav", PATH_MAX);
 
@@ -904,6 +906,7 @@ static void diskOpSave(bool checkOverwrite)
 			{
 				         case MOD_SAVE_MODE_MOD: diskOpChangeFilenameExt(".mod"); break;
 				default: case MOD_SAVE_MODE_XM:  diskOpChangeFilenameExt(".xm");  break;
+				         case MOD_SAVE_MODE_XMV: diskOpChangeFilenameExt(".xmv"); break;
 				         case MOD_SAVE_MODE_WAV: diskOpChangeFilenameExt(".wav"); break;
 			}
 
@@ -2005,7 +2008,8 @@ static void drawSaveAsElements(void)
 		{
 			textOutShadow(19, 101, PAL_FORGRND, PAL_DSKTOP2, "MOD");
 			textOutShadow(19, 115, PAL_FORGRND, PAL_DSKTOP2, "XM");
-			textOutShadow(19, 129, PAL_FORGRND, PAL_DSKTOP2, "WAV");
+			textOutShadow(19, 129, PAL_FORGRND, PAL_DSKTOP2, "XMV");
+			textOutShadow(19, 143, PAL_FORGRND, PAL_DSKTOP2, "WAV");
 		}
 		break;
 
@@ -2506,6 +2510,19 @@ void rbDiskOpModSaveXm(void)
 	editor.moduleSaveMode = MOD_SAVE_MODE_XM;
 	checkRadioButton(RB_DISKOP_MOD_SAVEAS_XM);
 	diskOpChangeFilenameExt(".xm");
+
+	updateCurrSongFilename(); // for window title
+	updateWindowTitle(true);
+}
+
+void rbDiskOpModSaveXmv(void)
+{
+	if (editor.moduleSaveMode == MOD_SAVE_MODE_WAV)
+		editor.diskOpReadDir = true;
+
+	editor.moduleSaveMode = MOD_SAVE_MODE_XMV;
+	checkRadioButton(RB_DISKOP_MOD_SAVEAS_XMV);
+	diskOpChangeFilenameExt(".xmv");
 
 	updateCurrSongFilename(); // for window title
 	updateWindowTitle(true);

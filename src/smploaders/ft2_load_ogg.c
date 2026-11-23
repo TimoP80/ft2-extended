@@ -108,6 +108,9 @@ bool loadOGG(FILE *f, uint32_t filesize)
 	if (numChannels == 2)
 		stereoAction = loaderSysReq(4, "System request", "This is a stereo sample. Which channel do you want to read?", NULL);
 
+	if (stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+		s->flags |= SAMPLE_STEREO;
+
 	const int32_t shift = (numChannels == 2) ? 2 : 1;
 	const int32_t bufferSamples = SAMPLE_BUFFER_SIZE >> shift;
 	int32_t sampleCounter = 0, sampleLength = 0;
@@ -126,7 +129,11 @@ bool loadOGG(FILE *f, uint32_t filesize)
 			bufPtr = (int8_t *)smpBuffer;
 
 			int32_t numSamples = sampleCounter >> shift;
-			if (!reallocateSmpData(s, sampleLength + numSamples, true))
+			const bool keepStereo = !!(s->flags & SAMPLE_STEREO);
+			const int32_t newTotalFrames = sampleLength + numSamples;
+			const int32_t allocSamples = keepStereo ? (newTotalFrames * 2) : newTotalFrames;
+
+			if (!reallocateSmpData(s, allocSamples, true))
 			{
 				ov_clear(&vorbis);
 				free(smpBuffer);
@@ -134,11 +141,16 @@ bool loadOGG(FILE *f, uint32_t filesize)
 				return false;
 			}
 
-			int16_t *dst16 = (int16_t *)s->dataPtr + sampleLength;
+			int16_t *dst16 = (int16_t *)s->dataPtr + (keepStereo ? (sampleLength * 2) : sampleLength);
 
 			if (numChannels == 1)
 			{
 				memcpy(dst16, smpBuffer, numSamples << shift);
+			}
+			else if (keepStereo)
+			{
+				// keep the interleaved L/R frames as-is
+				memcpy(dst16, smpBuffer, numSamples * 2 * sizeof (int16_t));
 			}
 			else
 			{
@@ -161,7 +173,7 @@ bool loadOGG(FILE *f, uint32_t filesize)
 				}
 			}
 
-			sampleLength += numSamples;
+			sampleLength = newTotalFrames;
 			sampleCounter = 0;
 		}
 

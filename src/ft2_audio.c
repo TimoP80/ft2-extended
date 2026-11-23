@@ -17,6 +17,7 @@
 #include "ft2_audioselector.h"
 #include "mixer/ft2_mix.h"
 #include "mixer/ft2_windowed_sinc.h"
+#include "ft2_vst3.h"
 
 // hide POSIX warnings
 #ifdef _MSC_VER
@@ -146,12 +147,14 @@ void setNewAudioFreq(uint32_t freq) // for song-to-WAV rendering
 	audio.freq = freq;
 
 	calcReplayerVars(audio.freq, audio.freq);
+	vst3SetSampleRate((float)audio.freq); // the audio callback is paused here
 }
 
 void setBackOldAudioFreq(void) // for song-to-WAV rendering
 {
 	audio.freq = oldAudioFreq;
 	calcReplayerVars(FT2_REF_AUDIO_RATE, audio.freq);
+	vst3SetSampleRate((float)audio.freq);
 }
 
 void setMixerBPM(int32_t bpm)
@@ -277,6 +280,8 @@ static void voiceTrigger(int32_t ch, sample_t *s, int32_t position)
 	int32_t loopEnd = s->loopStart + s->loopLength;
 	uint8_t loopType = GET_LOOPTYPE(s->flags);
 	bool sample16Bit = !!(s->flags & SAMPLE_16BIT);
+	const bool stereoSample = !!(s->flags & SAMPLE_STEREO);
+	const int32_t channelStride = stereoSample ? 2 : 1; // interleaved L/R frames
 
 	if (s->dataPtr == NULL || length < 1)
 	{
@@ -290,15 +295,18 @@ static void voiceTrigger(int32_t ch, sample_t *s, int32_t position)
 	if (sample16Bit)
 	{
 		v->base16 = (const int16_t *)s->dataPtr;
-		v->revBase16 = &v->base16[loopStart + loopEnd]; // for pingpong loops
-		v->leftEdgeTaps16 = s->leftEdgeTapSamples16 + MAX_LEFT_TAPS;
+		v->revBase16 = &v->base16[(loopStart + loopEnd) * channelStride]; // for pingpong loops
+		v->leftEdgeTaps16 = s->leftEdgeTapSamples16 + (stereoSample ? MAX_LEFT_TAPS*2 : MAX_LEFT_TAPS);
 	}
 	else
 	{
 		v->base8 = s->dataPtr;
-		v->revBase8 = &v->base8[loopStart + loopEnd]; // for pingpong loops
-		v->leftEdgeTaps8 = s->leftEdgeTapSamples8 + MAX_LEFT_TAPS;
+		v->revBase8 = &v->base8[(loopStart + loopEnd) * channelStride]; // for pingpong loops
+		v->leftEdgeTaps8 = s->leftEdgeTapSamples8 + (stereoSample ? MAX_LEFT_TAPS*2 : MAX_LEFT_TAPS);
 	}
+
+	v->isStereo = stereoSample;
+	v->is16Bit = sample16Bit;
 
 	v->hasLooped = false; // for cubic/sinc interpolation special case
 	v->samplingBackwards = false;
@@ -513,6 +521,10 @@ static void doChannelMixing(int32_t bufferPosition, int32_t samplesToMix)
 				// voice volume is zero and no volume ramp is ongoing, update sampling positions only
 				updateSamplingPosition(v, samplesToMix);
 			}
+			else if (v->isStereo)
+			{
+				mixStereoVoice(v, bufferPosition, samplesToMix);
+			}
 			else
 			{
 				// enter mixer
@@ -521,7 +533,12 @@ static void doChannelMixing(int32_t bufferPosition, int32_t samplesToMix)
 		}
 
 		if (r->active) // volume ramp fadeout-voice
-			mixFuncTab[mixOffsetBias + r->mixFuncOffset](r, bufferPosition, samplesToMix);
+		{
+			if (r->isStereo)
+				mixStereoVoice(r, bufferPosition, samplesToMix);
+			else
+				mixFuncTab[mixOffsetBias + r->mixFuncOffset](r, bufferPosition, samplesToMix);
+		}
 	}
 }
 
@@ -529,6 +546,8 @@ static void doChannelMixing(int32_t bufferPosition, int32_t samplesToMix)
 void mixReplayerTickToBuffer(uint32_t samplesToMix, void *stream, uint8_t bitDepth)
 {
 	doChannelMixing(0, samplesToMix);
+	vst3ProcessInstruments(samplesToMix, audio.fMixBufferL, audio.fMixBufferR);
+	vst3ProcessEffects(samplesToMix, audio.fMixBufferL, audio.fMixBufferR);
 
 	// normalize mix buffer and send to audio stream
 	if (bitDepth == 16)
@@ -908,6 +927,8 @@ static void audioCallback(void *userdata, Uint8 *stream, int len)
 			samplesToMix = audio.tickSampleCounter;
 
 		doChannelMixing(bufferPosition, samplesToMix);
+		vst3ProcessInstruments((uint32_t)samplesToMix, &audio.fMixBufferL[bufferPosition], &audio.fMixBufferR[bufferPosition]);
+		vst3ProcessEffects((uint32_t)samplesToMix, &audio.fMixBufferL[bufferPosition], &audio.fMixBufferR[bufferPosition]);
 		bufferPosition += samplesToMix;
 
 		audio.tickSampleCounter -= samplesToMix;

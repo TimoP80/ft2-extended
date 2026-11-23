@@ -13,6 +13,8 @@
 #include "ft2_module_loader.h"
 #include "ft2_tables.h"
 #include "ft2_structs.h"
+#include "ft2_diskop.h"
+#include "ft2_vst3.h"
 
 static int8_t smpChunkBuf[1024];
 static uint8_t packedPattData[65536], modPattData[64*32*4];
@@ -28,7 +30,7 @@ static const char modIDs[32][5] =
 
 static uint16_t packPatt(uint8_t *writePtr, uint8_t *pattPtr, uint16_t numRows);
 
-bool saveXM(UNICHAR *filenameU)
+static bool saveXMInternal(UNICHAR *filenameU, bool saveVstChunk)
 {
 	int16_t i, j, k, a;
 	size_t result;
@@ -217,6 +219,13 @@ bool saveXM(UNICHAR *filenameU)
 					dst->loopLength <<= 1;
 				}
 
+				if (s->flags & SAMPLE_STEREO) // file sample counts cover both interleaved channels
+				{
+					dst->length <<= 1;
+					dst->loopStart <<= 1;
+					dst->loopLength <<= 1;
+				}
+
 				dst->volume = s->volume;
 				dst->finetune = s->finetune;
 				dst->flags = s->flags;
@@ -255,11 +264,11 @@ bool saveXM(UNICHAR *filenameU)
 			if (s->dataPtr != NULL)
 			{
 				unfixSample(s);
-				samp2Delta(s->dataPtr, s->length, s->flags);
+				samp2Delta(s->dataPtr, SAMPLE_LENGTH_SAMPLES(s), s->flags);
 
 				result = fwrite(s->dataPtr, 1, SAMPLE_LENGTH_BYTES(s), f);
 
-				delta2Samp(s->dataPtr, s->length, s->flags);
+				delta2Samp(s->dataPtr, SAMPLE_LENGTH_SAMPLES(s), s->flags);
 				fixSample(s);
 
 				if (result != (size_t)SAMPLE_LENGTH_BYTES(s)) // write not OK
@@ -272,6 +281,14 @@ bool saveXM(UNICHAR *filenameU)
 		}
 	}
 
+	// .xmv appends the VST3 instrument references and presets
+	if (saveVstChunk && !vst3WriteSongVstChunk(f))
+	{
+		fclose(f);
+		okBoxThreadSafe(0, "System message", "Error saving module: general I/O error!", NULL);
+		return false;
+	}
+
 	removeSongModifiedFlag();
 
 	fclose(f);
@@ -280,6 +297,16 @@ bool saveXM(UNICHAR *filenameU)
 
 	setMouseBusy(false);
 	return true;
+}
+
+bool saveXM(UNICHAR *filenameU)
+{
+	return saveXMInternal(filenameU, false);
+}
+
+bool saveXMV(UNICHAR *filenameU)
+{
+	return saveXMInternal(filenameU, true);
 }
 
 static bool saveMOD(UNICHAR *filenameU)
@@ -653,8 +680,10 @@ static int32_t saveMusicThread(void *ptr)
 
 	pauseAudio();
 
-	if (editor.moduleSaveMode == 1)
+	if (editor.moduleSaveMode == MOD_SAVE_MODE_XM)
 		saveXM(editor.tmpFilenameU);
+	else if (editor.moduleSaveMode == MOD_SAVE_MODE_XMV)
+		saveXMV(editor.tmpFilenameU);
 	else
 		saveMOD(editor.tmpFilenameU);
 

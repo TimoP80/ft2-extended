@@ -38,6 +38,7 @@
 #include "ft2_structs.h"
 #include "ft2_hpc.h"
 #include "ft2_smpfx.h"
+#include "ft2_vst3.h"
 #include "mixer/ft2_windowed_sinc.h"
 
 static void initializeVars(void);
@@ -52,7 +53,16 @@ static void disableWasapi(void);
 
 int main(int argc, char *argv[])
 {
-#ifdef _WIN32 // test for SSE/SSE2 presence very first, to make sure no SSE/SSE2 code is attempted to be ran
+#ifdef _WIN32
+	// Isolated VST3 scanner worker. This must be handled before SDL, config, window and
+	// single-instance setup so the worker doesn't touch the user's files or running instance.
+	if (argc >= 2 && argv[1] != NULL && strcmp(argv[1], "--ft2-vst3-scan-worker") == 0)
+	{
+		vst3ScannerWorkerMain();
+		return 0;
+	}
+
+	// test for SSE/SSE2 presence very first, to make sure no SSE/SSE2 code is attempted to be ran
 	if (!SDL_HasSSE())
 	{
 		MessageBoxA(NULL, "Your computer's processor doesn't have the SSE instruction set " \
@@ -358,6 +368,10 @@ static void cleanUpAndExit(void) // never call this inside the main loop!
 		editor.midiConfigFileLocationU = NULL;
 	}
 #endif
+
+	// unload the plug-ins while their editor windows and the message loop are
+	// still alive, and before the main window they are parented to goes away
+	vst3Cleanup();
 
 	closeAudio();
 	closeReplayer();

@@ -263,6 +263,7 @@ pushButton_t pushButtons[NUM_PUSHBUTTONS] =
 	{ 222, 138, 66, 16, 0, 0, "Xchg smp.", NULL,    NULL,       xchgSmp },
 	{ 161, 155, 60, 16, 0, 0, "Resample",  NULL,    NULL,       pbSampleResample },
 	{ 222, 155, 66, 16, 0, 0, "Mix smp.",  NULL,    NULL,       pbSampleMix },
+	{ 222, 172, 66, 16, 0, 0, "Loop tempo", NULL,    NULL,       pbLoopStretchTempo },
 
 	// ------ INSTRUMENT EDITOR PUSHBUTTONS ------
 	//x,   y,   w,  h,  p, d, text #1,            text #2, funcOnDown,     funcOnUp
@@ -414,7 +415,17 @@ pushButton_t pushButtons[NUM_PUSHBUTTONS] =
 	{ 138, 142, 18, 13, 1, 4, ARROW_UP_STRING,   NULL,    pbWavSongStartUp,   NULL },
 	{ 155, 142, 18, 13, 1, 4, ARROW_DOWN_STRING, NULL,    pbWavSongStartDown, NULL },
 	{ 253, 142, 18, 13, 1, 4, ARROW_UP_STRING,   NULL,    pbWavSongEndUp,     NULL },
-	{ 270, 142, 18, 13, 1, 4, ARROW_DOWN_STRING, NULL,    pbWavSongEndDown,   NULL }
+	{ 270, 142, 18, 13, 1, 4, ARROW_DOWN_STRING, NULL,    pbWavSongEndDown,   NULL },
+
+	// ------ CONFIG VST3 PUSHBUTTONS ------
+	//x,   y,   w,  h,  p, d, text #1,        text #2, funcOnDown, funcOnUp
+	{ 520, 152, 114, 16, 0, 0, "Re-scan",       NULL,    NULL,       configScanVST3Plugins },
+	{ 403, 152, 114, 16, 0, 0, "Master FX...",  NULL,    NULL,       configShowVST3FxPanel },
+	{ 402, 138, 114, 13, 0, 0, "Skipped...",    NULL,    NULL,       configToggleVST3SkippedReport },
+	{ 430,  40,  86, 16, 0, 0, "Editor",        NULL,    NULL,       configVST3FxEditor },
+	{ 520,  40,  86, 16, 0, 0, "Bypass",        NULL,    NULL,       configVST3FxBypass },
+	{ 430,  58,  86, 16, 0, 0, "Remove",        NULL,    NULL,       configVST3FxRemove },
+	{ 520,  58,  86, 16, 0, 0, "Close",         NULL,    NULL,       configVST3FxClose }
 };
 
 static uint32_t tmpCounter;

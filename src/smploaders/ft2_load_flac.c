@@ -193,17 +193,24 @@ bool loadFLAC(FILE *f, uint32_t filesize)
 	if (numChannels == 2)
 		stereoAction = loaderSysReq(4, "System request", "This is a stereo sample. Which channel do you want to read?", NULL);
 
+	const bool keepStereo = (numChannels == 2 && stereoAction == STEREO_SAMPLE_KEEP_STEREO);
+	if (keepStereo)
+		s->flags |= SAMPLE_STEREO;
+
 	bool sample16Bit = (bitDepth >= 16);
 	if (sample16Bit)
 		s->flags |= SAMPLE_16BIT;
 
 	if (totalSamples > MAX_SAMPLE_LEN)
 		totalSamples = MAX_SAMPLE_LEN;
+	if (keepStereo && totalSamples > MAX_SAMPLE_LEN/2)
+		totalSamples = MAX_SAMPLE_LEN/2;
 
 	s->length = (uint32_t)totalSamples;
 	setSampleC4Hz(s, sampleRate);
 
-	if (!allocateSmpData(s, s->length, sample16Bit))
+	const uint32_t allocLength = keepStereo ? (s->length * 2) : s->length;
+	if (!allocateSmpData(s, allocLength, sample16Bit))
 		goto oomError;
 
 	int64_t sampleIndex = 0;
@@ -268,6 +275,32 @@ static bool writeSamples(int64_t sampleIndex, int32_t **samples, int32_t numSamp
 
 			for (int32_t i = 0; i < samplesTodo; i++)
 				ptr16[i] = (int16_t)(src32[i] >> shift);
+		}
+	}
+	else if (stereoAction == STEREO_SAMPLE_KEEP_STEREO)
+	{
+		// keep the interleaved L/R frames as-is
+		int32_t *src32L = samples[0], *src32R = samples[1];
+
+		if (bitDepth == 8)
+		{
+			int8_t *ptr8 = (int8_t *)s->dataPtr + (sampleIndex * 2);
+			for (int32_t i = 0; i < samplesTodo; i++)
+			{
+				ptr8[(i * 2) + 0] = (int8_t)src32L[i];
+				ptr8[(i * 2) + 1] = (int8_t)src32R[i];
+			}
+		}
+		else
+		{
+			int16_t *ptr16 = (int16_t *)s->dataPtr + (sampleIndex * 2);
+			const int8_t shift = bitDepth - 16;
+
+			for (int32_t i = 0; i < samplesTodo; i++)
+			{
+				ptr16[(i * 2) + 0] = (int16_t)(src32L[i] >> shift);
+				ptr16[(i * 2) + 1] = (int16_t)(src32R[i] >> shift);
+			}
 		}
 	}
 	else

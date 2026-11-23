@@ -64,7 +64,7 @@ enum
 #define INSTR_XI_HEADER_SIZE 298
 #define MAX_SAMPLE_LEN 0x3FFFFFFF
 #define FT2_QUICK_VOLRAMP_MILLISECONDS 5
-#define PROG_NAME_STR "Fasttracker II clone"
+#define PROG_NAME_STR "Fasttracker 2 Clone Extended"
 
 enum // sample flags
 {
@@ -82,7 +82,12 @@ enum // envelope flags
 
 #define GET_LOOPTYPE(smpFlags) ((smpFlags) & (LOOP_FORWARD | LOOP_PINGPONG))
 #define DISABLE_LOOP(smpFlags) ((smpFlags) &= ~(LOOP_FORWARD | LOOP_PINGPONG))
-#define SAMPLE_LENGTH_BYTES(smp) ((smp->flags & SAMPLE_16BIT) ? (smp->length * 2) : smp->length)
+/* Stereo samples are stored as interleaved L/R frames, and length/loopStart/
+** loopLength are frame counts (one frame = one left + one right sample).
+*/
+#define SAMPLE_NUM_CHANNELS(smp) (((smp)->flags & SAMPLE_STEREO) ? 2 : 1)
+#define SAMPLE_LENGTH_SAMPLES(smp) ((smp)->length * SAMPLE_NUM_CHANNELS(smp))
+#define SAMPLE_LENGTH_BYTES(smp) (SAMPLE_LENGTH_SAMPLES(smp) * (((smp)->flags & SAMPLE_16BIT) ? 2 : 1))
 #define FINETUNE_MOD2XM(f) (((uint8_t)(f) & 0x0F) << 4)
 #define FINETUNE_XM2MOD(f) ((uint8_t)(f) >> 4)
 
@@ -218,9 +223,9 @@ typedef struct sample_t
 	uint8_t volume, flags, panning;
 	int32_t length, loopStart, loopLength;
 
-	// fix for resampling interpolation taps
-	int8_t leftEdgeTapSamples8[MAX_TAPS*2];
-	int16_t leftEdgeTapSamples16[MAX_TAPS*2];
+	// fix for resampling interpolation taps (MAX_TAPS*3 so interleaved stereo taps fit)
+	int8_t leftEdgeTapSamples8[MAX_TAPS*3];
+	int16_t leftEdgeTapSamples16[MAX_TAPS*3];
 	int16_t fixedSmp[MAX_TAPS*2];
 	int32_t fixedPos;
 } sample_t;
@@ -259,6 +264,12 @@ typedef struct channel_t
 	uint16_t midiVibDepth, fadeoutVol, fadeoutSpeed;
 	int32_t smpStartPos;
 	float fFinalVol;
+
+	// note currently started on the VST3 instrument of this channel. The note-off
+	// has to go to the same plug-in and note id, even if the channel's instrument
+	// has changed in the meantime (0 = this channel holds no plug-in note).
+	int32_t vst3NoteId;
+	uint8_t vst3InstrNum, vst3NoteNum;
 
 	sample_t *smpPtr;
 	instr_t *instrPtr;
@@ -320,8 +331,9 @@ void playTone(uint8_t chNum, uint8_t insNum, uint8_t note, int8_t vol, uint16_t 
 void playSample(uint8_t chNum, uint8_t insNum, uint8_t smpNum, uint8_t note, uint16_t midiVibDepth, uint16_t midiPitch);
 void playRange(uint8_t chNum, uint8_t insNum, uint8_t smpNum, uint8_t note, uint16_t midiVibDepth, uint16_t midiPitch, int32_t smpOffset, int32_t length);
 void keyOff(channel_t *ch);
-void conv8BitSample(int8_t *p, int32_t length, bool stereo); // changes sample sign
-void conv16BitSample(int8_t *p, int32_t length, bool stereo); // changes sample sign
+void conv8BitSample(int8_t *p, int32_t length, bool stereo); // changes sample sign (stereo = interleaved)
+void conv16BitSample(int8_t *p, int32_t length, bool stereo); // changes sample sign (stereo = interleaved)
+bool stereoPlanarToInterleaved(int8_t *p, int32_t numFrames, bool sample16Bit); // converts in place, needs temporary memory
 void delta2Samp(int8_t *p, int32_t length, uint8_t smpFlags);
 void samp2Delta(int8_t *p, int32_t length, uint8_t smpFlags);
 void setPatternLen(uint16_t pattNum, int16_t numRows);

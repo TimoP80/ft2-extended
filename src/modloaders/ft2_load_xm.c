@@ -12,6 +12,7 @@
 #include "../ft2_sample_ed.h"
 #include "../ft2_tables.h"
 #include "../ft2_sysreqs.h"
+#include "../ft2_vst3.h"
 
 /* ModPlug Tracker & OpenMPT supports up to 32 samples per instrument for XMs -  we don't.
 ** For such modules, we use a temporary array here to store the extra sample data lengths
@@ -138,6 +139,13 @@ bool loadXM(FILE *f, uint32_t filesize)
 				return false;
 		}
 	}
+
+	/* .xmv files append a custom chunk after the XM data with the VST3
+	** instrument references and the plug-in presets. Plain .xm files end here.
+	*/
+	const long dataEnd = ftell(f);
+	if (dataEnd >= 0 && (uint32_t)dataEnd < filesize)
+		vst3ReadSongVstChunk(f, filesize - (uint32_t)dataEnd);
 
 	// if we temporarily loaded more than 128 instruments, clear the extra allocated memory
 	if (header.numInstr > MAX_INST)
@@ -379,20 +387,14 @@ static bool loadInstrSample(FILE *f, int32_t insNum)
 
 					delta2Samp(s->dataPtr, s->length, s->flags);
 
-					if (stereoSample) // stereo sample - already downmixed to mono in delta2samp()
+					if (stereoSample) // interleaved L/R frames - file length/loops are sample counts
 					{
 						s->length >>= 1;
 						s->loopStart >>= 1;
 						s->loopLength >>= 1;
-
-						reallocateSmpData(s, s->length, sample16Bit); // dealloc unused memory
 					}
 				}
 			}
-
-			// remove stereo flag if present (already handled)
-			if (s->flags & SAMPLE_STEREO)
-				s->flags &= ~SAMPLE_STEREO;
 		}
 	}
 

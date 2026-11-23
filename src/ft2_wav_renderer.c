@@ -19,6 +19,7 @@
 #include "ft2_audio.h"
 #include "ft2_wav_renderer.h"
 #include "ft2_structs.h"
+#include "ft2_vst3.h"
 
 #define UPDATE_VISUALS_AT_TICK 4
 #define TICKS_PER_RENDER_CHUNK 64
@@ -486,6 +487,7 @@ static int32_t renderWavIndividualTracksThread(void *ptr)
 				channel[i].dontRenderThisChannel = false;
 			}
 
+			vst3SetRenderSoloInstrument(VST3_RENDER_ALL);
 			setBackOldAudioFreq();
 			setMixerBPM(song.BPM);
 			setAudioAmp(config.boostLevel, config.masterVol, !!(config.specialFlags & BITDEPTH_32));
@@ -549,6 +551,10 @@ static int32_t renderWavIndividualTracksThread(void *ptr)
 					tickSamples++;
 				}
 
+				// only include the VST3 instrument this channel is currently driving
+				const uint8_t insNum = channel[j].instrNum;
+				vst3SetRenderSoloInstrument((insNum > 0 && vst3GetAssignedInstrument(insNum) >= 0) ? (int32_t)insNum : VST3_RENDER_NONE);
+
 				mixReplayerTickToBuffer(tickSamples, ptr8, WDBitDepth);
 
 				tickSamples *= 2; // stereo
@@ -592,6 +598,7 @@ static int32_t renderWavIndividualTracksThread(void *ptr)
 		}
 
 		stopPlaying();
+		vst3SetRenderSoloInstrument(VST3_RENDER_ALL);
 
 		// kludge: set speed to 6 if speed was set to 0
 		if (song.speed == 0)

@@ -32,7 +32,8 @@ typedef struct scope_t
 	const int8_t *base8;
 	const int16_t *base16;
 	bool wasCleared, sample16Bit, samplingBackwards, hasLooped;
-	uint8_t loopType;
+	bool vst3; // scope shows a live VST3 instrument output instead of sample data
+	uint8_t loopType, vst3Instrument, vst3SilentFrames;
 	int32_t volume, loopStart, loopLength, loopEnd, sampleEnd, position;
 	uint64_t drawDelta;
 	uint64_t delta, positionFrac;

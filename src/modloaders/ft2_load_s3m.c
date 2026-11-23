@@ -558,10 +558,12 @@ bool loadS3M(FILE *f, uint32_t filesize)
 				bool stereoSample = !!(srcSmp->flags & 2);
 				bool sample16Bit = !!(srcSmp->flags & 4);
 
-				if (stereoSample)
-					srcSmp->length <<= 1;
+				const int32_t sampleChannels = stereoSample ? 2 : 1;
 
-				s->length = srcSmp->length;
+				if (stereoSample)
+					srcSmp->length <<= 1; // file holds both channel planes
+
+				s->length = srcSmp->length / sampleChannels; // frame count
 				s->volume = srcSmp->volume;
 				s->loopStart = srcSmp->loopStart;
 				s->loopLength = srcSmp->loopEnd - srcSmp->loopStart;
@@ -570,7 +572,7 @@ bool loadS3M(FILE *f, uint32_t filesize)
 				if (sample16Bit)
 					s->flags |= SAMPLE_16BIT;
 
-				if (!allocateSmpData(s, s->length, sample16Bit))
+				if (!allocateSmpData(s, s->length * sampleChannels, sample16Bit))
 				{
 					loaderMsgBox("Not enough memory!");
 					return false;
@@ -588,24 +590,31 @@ bool loadS3M(FILE *f, uint32_t filesize)
 
 				fseek(f, offsetInFile, SEEK_SET);
 
+				const int32_t totalSamples = s->length * sampleChannels;
+
 				if (sample16Bit)
-					fread(s->dataPtr, 2, s->length, f);
+					fread(s->dataPtr, 2, totalSamples, f);
 				else
-					fread(s->dataPtr, 1, s->length, f);
+					fread(s->dataPtr, 1, totalSamples, f);
 
 				if (header.ffi == 2) // unsigned samples, convert to signed
 				{
 					if (sample16Bit)
-						conv16BitSample(s->dataPtr, s->length, stereoSample);
+						conv16BitSample(s->dataPtr, totalSamples, stereoSample);
 					else
-						conv8BitSample(s->dataPtr, s->length, stereoSample);
+						conv8BitSample(s->dataPtr, totalSamples, stereoSample);
 				}
 
-				// if stereo sample: reduce memory footprint after sample was downmixed to mono
+				// S3M stereo samples are stored as two planes, convert to interleaved frames
 				if (stereoSample)
 				{
-					s->length >>= 1;
-					reallocateSmpData(s, s->length, sample16Bit);
+					if (!stereoPlanarToInterleaved(s->dataPtr, s->length, sample16Bit))
+					{
+						loaderMsgBox("Not enough memory!");
+						return false;
+					}
+
+					s->flags |= SAMPLE_STEREO;
 				}
 			}
 		}

@@ -29,3 +29,6 @@ enum
 typedef void (*mixFunc)(void *, uint32_t, uint32_t);
 
 extern const mixFunc mixFuncTab[]; // ft2_mix.c
+
+// interleaved stereo voices (SAMPLE_STEREO) have their own mixer path
+void mixStereoVoice(void *v, uint32_t bufferPos, uint32_t numSamples);

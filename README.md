@@ -1,5 +1,5 @@
-# ft2-clone
-Fasttracker II clone for Windows/macOS/Linux
+# Fasttracker 2 Clone Extended
+Fasttracker 2 Clone Extended for Windows/macOS/Linux
 
 Aims to be a highly accurate clone of the classic Fasttracker II software for MS-DOS. \
 The XM player itself has been directly ported from the original source code, for maximum accuracy. \

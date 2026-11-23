@@ -35,6 +35,37 @@
 
 config_t config; // globalized
 
+static SDL_atomic_t vst3ScanState;
+static bool vst3ScanSucceeded;
+static bool vst3ScanCompletionDrawn;
+static uint32_t vst3ProgressLastDrawTick;
+static int32_t vst3SelectedPlugin = -1;
+static bool vst3SkippedReportShown = false;
+static int32_t vst3SelectedSkipped = -1;
+static char vst3SkippedButtonText[32];
+
+#define CONFIG_VST3_CACHE_MAX_SIZE (64u * 1024u * 1024u)
+
+#define VST3_LIST_X 114
+#define VST3_LIST_Y 18
+#define VST3_LIST_W 498
+#define VST3_LIST_H 116
+#define VST3_LIST_ROWS 10
+#define VST3_ROW_H 11
+
+static void drawVST3ScanProgress(const vst3ScanProgress_t *progress);
+static void drawVST3ScanError(const char *error);
+static void drawVST3SkippedReport(void);
+static void drawVST3SkippedDetails(void);
+static void setVST3SkippedButtonText(void);
+
+// master VST3 effect chain panel state
+static bool vst3FxPanelShown = false;
+static int32_t vst3FxSelected = -1;
+static int32_t vst3FxAvailableScroll = 0;
+static void drawVST3FxPanel(void);
+static void setVST3FxPanelButtonsVisible(bool visible);
+
 #ifdef _MSC_VER // hide POSIX warnings
 #pragma warning(disable: 4996)
 #endif
@@ -319,8 +350,9 @@ bool loadConfig(bool showErrorFlag)
 	const size_t fileSize = ftell(f);
 	rewind(f);
 
-	// check if it's a valid FT2 config file (FT2.CFG filesize varies depending on version)
-	if (fileSize < 1732 || fileSize > CONFIG_FILE_SIZE)
+	// check if it's a valid FT2 config file (FT2.CFG filesize varies depending on version).
+	// Files written by this build have the VST3 plugin cache appended after the config block.
+	if (fileSize < 1732 || fileSize > CONFIG_FILE_SIZE + CONFIG_VST3_CACHE_MAX_SIZE)
 	{
 		fclose(f);
 		if (showErrorFlag)
@@ -332,8 +364,10 @@ bool loadConfig(bool showErrorFlag)
 	if (fileSize < CONFIG_FILE_SIZE) // old version, make sure unloaded entries are zeroed out
 		memset(configBuffer, 0, CONFIG_FILE_SIZE);
 
-	// read to config buffer and close file handle
-	if (fread(configBuffer, fileSize, 1, f) != 1)
+	const size_t configBytes = fileSize < CONFIG_FILE_SIZE ? fileSize : CONFIG_FILE_SIZE;
+
+	// read to config buffer
+	if (fread(configBuffer, configBytes, 1, f) != 1)
 	{
 		fclose(f);
 		if (showErrorFlag)
@@ -342,12 +376,11 @@ bool loadConfig(bool showErrorFlag)
 		return false;
 	}
 
-	fclose(f);
-
 	xorConfigBuffer(configBuffer); // decrypt config buffer
 
 	if (memcmp(&configBuffer[0], CFG_ID_STR, 35) != 0)
 	{
+		fclose(f);
 		if (showErrorFlag)
 			okBox(0, "System message", "Error loading config: the config file is not valid!", NULL);
 
@@ -355,6 +388,16 @@ bool loadConfig(bool showErrorFlag)
 	}
 
 	loadConfigFromBuffer(false);
+	if (fileSize > CONFIG_FILE_SIZE)
+	{
+		fseek(f, CONFIG_FILE_SIZE, SEEK_SET);
+		vst3ReadPluginCache(f, (uint32_t)(fileSize - CONFIG_FILE_SIZE));
+	}
+	else
+	{
+		vst3ReadPluginCache(NULL, 0);
+	}
+	fclose(f);
 	return true;
 }
 
@@ -419,6 +462,16 @@ bool saveConfig(bool showErrorFlag)
 	xorConfigBuffer(configBuffer);
 
 	if (fwrite(configBuffer, 1, CONFIG_FILE_SIZE, f) != CONFIG_FILE_SIZE)
+	{
+		fclose(f);
+
+		if (showErrorFlag)
+			okBox(0, "System message", "General I/O error during config saving! Is the file in use?", NULL);
+
+		return false;
+	}
+
+	if (!vst3WritePluginCache(f))
 	{
 		fclose(f);
 
@@ -700,8 +753,9 @@ void loadConfigOrSetDefaults(void)
 	const size_t fileSize = ftell(f);
 	rewind(f);
 
-	// not a valid FT2 config file (FT2.CFG filesize varies depending on version)
-	if (fileSize < 1732 || fileSize > CONFIG_FILE_SIZE)
+	// not a valid FT2 config file (FT2.CFG filesize varies depending on version).
+	// Files written by this build have the VST3 plugin cache appended after the config block.
+	if (fileSize < 1732 || fileSize > CONFIG_FILE_SIZE + CONFIG_VST3_CACHE_MAX_SIZE)
 	{
 		fclose(f);
 		setDefaultConfigSettings();
@@ -712,7 +766,9 @@ void loadConfigOrSetDefaults(void)
 	if (fileSize < CONFIG_FILE_SIZE)
 		memset(configBuffer, 0, CONFIG_FILE_SIZE);
 
-	if (fread(configBuffer, fileSize, 1, f) != 1)
+	const size_t configBytes = fileSize < CONFIG_FILE_SIZE ? fileSize : CONFIG_FILE_SIZE;
+
+	if (fread(configBuffer, configBytes, 1, f) != 1)
 	{
 		fclose(f);
 		setDefaultConfigSettings();
@@ -720,17 +776,24 @@ void loadConfigOrSetDefaults(void)
 		return;
 	}
 
-	fclose(f);
-
 	// decrypt config buffer
 	xorConfigBuffer(configBuffer);
 
 	if (memcmp(&configBuffer[0], CFG_ID_STR, 35) != 0)
 	{
+		fclose(f);
 		setDefaultConfigSettings();
 		showErrorMsgBox("The configuration file (FT2.CFG) was corrupt, default settings were loaded.");
 		return;
 	}
+
+	// restore the VST3 plugin cache that saveConfig() appends after the config block
+	if (fileSize > CONFIG_FILE_SIZE)
+		vst3ReadPluginCache(f, (uint32_t)(fileSize - CONFIG_FILE_SIZE));
+	else
+		vst3ReadPluginCache(NULL, 0);
+
+	fclose(f);
 
 	loadConfigFromBuffer(false);
 }
@@ -793,6 +856,7 @@ static void setConfigRadioButtonStates(void)
 		case CONFIG_SCREEN_AUDIO:         tmpID = RB_CONFIG_AUDIO;         break;
 		case CONFIG_SCREEN_LAYOUT:        tmpID = RB_CONFIG_LAYOUT;        break;
 		case CONFIG_SCREEN_MISCELLANEOUS: tmpID = RB_CONFIG_MISCELLANEOUS; break;
+		case CONFIG_SCREEN_VST3:          tmpID = RB_CONFIG_VST3;          break;
 #ifdef HAS_MIDI
 		case CONFIG_SCREEN_MIDI_INPUT:    tmpID = RB_CONFIG_MIDI_INPUT;    break;
 #endif
@@ -1116,10 +1180,11 @@ void showConfigScreen(void)
 
 	textOutShadow(4,   4, PAL_FORGRND, PAL_DSKTOP2, "Configuration:");
 	textOutShadow(21, 19, PAL_FORGRND, PAL_DSKTOP2, "Audio");
-	textOutShadow(21, 35, PAL_FORGRND, PAL_DSKTOP2, "Layout");
-	textOutShadow(21, 51, PAL_FORGRND, PAL_DSKTOP2, "Miscellaneous");
+	textOutShadow(21, 34, PAL_FORGRND, PAL_DSKTOP2, "Layout");
+	textOutShadow(21, 49, PAL_FORGRND, PAL_DSKTOP2, "Miscellaneous");
+	textOutShadow(21, 64, PAL_FORGRND, PAL_DSKTOP2, "VST");
 #ifdef HAS_MIDI
-	textOutShadow(21, 67, PAL_FORGRND, PAL_DSKTOP2, "MIDI input");
+	textOutShadow(21, 79, PAL_FORGRND, PAL_DSKTOP2, "MIDI input");
 #endif
 	textOutShadow(20, 93, PAL_FORGRND, PAL_DSKTOP2, "Auto save");
 
@@ -1390,6 +1455,49 @@ void showConfigScreen(void)
 		}
 		break;
 
+		case CONFIG_SCREEN_VST3:
+		{
+			drawFramework(110, 0, 530, 173, FRAMEWORK_TYPE1);
+
+			if (vst3FxPanelShown)
+			{
+				// the master effect panel owns the plugin list area while it is open
+				drawVST3FxPanel();
+				setVST3FxPanelButtonsVisible(true);
+			}
+			else
+			{
+				drawFramework(112, 16, 502, 120, FRAMEWORK_TYPE2);
+
+				showPushButton(PB_CONFIG_VST3_SCAN);
+				showPushButton(PB_CONFIG_VST3_FX);
+				showPushButton(PB_CONFIG_VST3_SKIPPED);
+				showScrollBar(SB_VST3_PLUGIN_SCROLL);
+
+				if (SDL_AtomicGet(&vst3ScanState) == 1)
+				{
+					vst3ScanProgress_t progress;
+					vst3GetScanProgress(&progress);
+					drawVST3ScanProgress(&progress);
+				}
+				else
+				{
+					char error[256];
+					if (SDL_AtomicGet(&vst3ScanState) == 2 && !vst3ScanSucceeded)
+					{
+						if (vst3GetLastScanError(error, sizeof(error)) == 0)
+							strcpy(error, "VST scanning is not available in this build.");
+						drawVST3ScanError(error);
+					}
+					else
+					{
+						drawVST3PluginList();
+					}
+				}
+			}
+		}
+		break;
+
 #ifdef HAS_MIDI
 		case CONFIG_SCREEN_MIDI_INPUT:
 		{
@@ -1475,6 +1583,14 @@ void hideConfigScreen(void)
 	hideScrollBar(SB_PAL_G);
 	hideScrollBar(SB_PAL_B);
 	hideScrollBar(SB_PAL_CONTRAST);
+
+	// CONFIG VST3
+	vst3FxPanelShown = false;
+	setVST3FxPanelButtonsVisible(false);
+	hidePushButton(PB_CONFIG_VST3_SCAN);
+	hidePushButton(PB_CONFIG_VST3_FX);
+	hidePushButton(PB_CONFIG_VST3_SKIPPED);
+	hideScrollBar(SB_VST3_PLUGIN_SCROLL);
 
 	// CONFIG MISCELLANEOUS
 	hideRadioButtonGroup(RB_GROUP_CONFIG_FILESORT);
@@ -1564,6 +1680,15 @@ void rbConfigMiscellaneous(void)
 {
 	checkRadioButton(RB_CONFIG_MISCELLANEOUS);
 	editor.currConfigScreen = CONFIG_SCREEN_MISCELLANEOUS;
+
+	hideConfigScreen();
+	showConfigScreen();
+}
+
+void rbConfigVST3(void)
+{
+	checkRadioButton(RB_CONFIG_VST3);
+	editor.currConfigScreen = CONFIG_SCREEN_VST3;
 
 	hideConfigScreen();
 	showConfigScreen();
@@ -2285,4 +2410,722 @@ void configMasterVolDown(void)
 void configMasterVolUp(void)
 {
 	scrollBarScrollRight(SB_MASTERVOL_SCROLL, 1);
+}
+
+static void drawVST3Header(const char *title, const char *status)
+{
+	clearRect(113, 1, 524, 14);
+	textOutShadow(114, 4, PAL_FORGRND, PAL_DSKTOP2, title);
+
+	if (status != NULL && status[0] != '\0')
+	{
+		// right-aligned, but never allowed to run into the title on the left
+		const uint16_t statusWidth = textWidth(status);
+		const uint16_t statusX = (statusWidth < 352) ? (uint16_t)(612 - statusWidth) : 260;
+		textOutShadow(statusX, 4, PAL_FORGRND, PAL_DSKTOP2, status);
+	}
+}
+
+static void drawVST3PluginDetails(void)
+{
+	char text[320];
+	vst3PluginInfo_t info;
+
+	// keep clear of the "Master FX..." push button in the lower right corner
+	clearRect(114, 136, 282, 36);
+
+	if (vst3SelectedPlugin < 0 || !vst3GetPluginInfo((uint32_t)vst3SelectedPlugin, &info))
+	{
+		textOutClipX(114, 139, PAL_FORGRND, "Select a plugin to see details.", 390);
+		return;
+	}
+
+	textOutClipX(114, 139, PAL_FORGRND, info.name, 390);
+
+	snprintf(text, sizeof(text), "%s | %s | %s", info.vendor, info.category, info.version);
+	textOutClipX(114, 151, PAL_FORGRND, text, 390);
+
+	textOutClipX(114, 164, PAL_FORGRND, info.modulePath, 390);
+}
+
+static void setVST3SkippedButtonText(void)
+{
+	if (vst3SkippedReportShown)
+		strcpy(vst3SkippedButtonText, "Show plugins");
+	else
+		snprintf(vst3SkippedButtonText, sizeof(vst3SkippedButtonText), "Skipped (%u)",
+			vst3GetSkippedPluginCount());
+
+	pushButtons[PB_CONFIG_VST3_SKIPPED].caption = vst3SkippedButtonText;
+	drawPushButton(PB_CONFIG_VST3_SKIPPED);
+}
+
+static void drawVST3SkippedDetails(void)
+{
+	vst3SkippedPlugin_t info;
+
+	// keep clear of the push buttons in the lower right corner
+	clearRect(114, 136, 282, 36);
+
+	if (vst3SelectedSkipped < 0 || !vst3GetSkippedPluginInfo((uint32_t)vst3SelectedSkipped, &info))
+	{
+		textOutClipX(114, 139, PAL_FORGRND, "Select a skipped plugin to see why it was left out.", 390);
+		return;
+	}
+
+	textOutClipX(114, 139, PAL_FORGRND, info.name, 390);
+	textOutClipX(114, 151, PAL_FORGRND, info.reason, 390);
+	textOutClipX(114, 164, PAL_FORGRND, info.modulePath, 390);
+}
+
+// report of the plug-ins the last scan found but had to leave out
+static void drawVST3SkippedReport(void)
+{
+	char status[64];
+	vst3SkippedPlugin_t info;
+
+	const uint32_t skippedCount = vst3GetSkippedPluginCount();
+
+	snprintf(status, sizeof(status), "%u skipped", skippedCount);
+	drawVST3Header("Skipped plugins:", status);
+	clearRect(VST3_LIST_X, VST3_LIST_Y, VST3_LIST_W, VST3_LIST_H);
+
+	if (vst3SelectedSkipped >= (int32_t)skippedCount)
+		vst3SelectedSkipped = -1;
+
+	setScrollBarEnd(SB_VST3_PLUGIN_SCROLL, skippedCount > 0 ? skippedCount : 1);
+
+	if (skippedCount == 0)
+	{
+		textOutClipX(116, 22, PAL_FORGRND, "No plugins were skipped in the last scan.", 608);
+		drawVST3SkippedDetails();
+		return;
+	}
+
+	const uint32_t firstSkipped = getScrollBarPos(SB_VST3_PLUGIN_SCROLL);
+	for (uint32_t i = 0; i < VST3_LIST_ROWS; i++)
+	{
+		const uint32_t skippedIndex = firstSkipped + i;
+		if (skippedIndex >= skippedCount)
+			break;
+
+		if (!vst3GetSkippedPluginInfo(skippedIndex, &info))
+			continue;
+
+		const uint16_t y = (uint16_t)(VST3_LIST_Y + (i * VST3_ROW_H));
+		if (vst3SelectedSkipped == (int32_t)skippedIndex)
+			fillRect(VST3_LIST_X, y, VST3_LIST_W, VST3_ROW_H - 1, PAL_BOXSLCT);
+
+		// name on the left, reason on the right (same columns as the plugin list)
+		textOutClipX(116, y, PAL_FORGRND, info.name, 424);
+		textOutClipX(428, y, PAL_FORGRND, info.reason, 610);
+	}
+
+	drawVST3SkippedDetails();
+}
+
+void drawVST3PluginList(void)
+{
+	char status[64];
+	char rowText[192];
+	vst3PluginInfo_t info;
+
+	setVST3SkippedButtonText();
+
+	if (vst3SkippedReportShown)
+	{
+		drawVST3SkippedReport();
+		return;
+	}
+
+	const uint32_t pluginCount = vst3GetPluginCount();
+	const uint32_t instrumentCount = vst3GetInstrumentPluginCount();
+
+	vst3ScanProgress_t progress;
+	vst3GetScanProgress(&progress);
+
+	if (pluginCount > 0)
+	{
+		if (progress.skippedPlugins > 0)
+			snprintf(status, sizeof(status), "%u plugins, %u instruments, %u skipped",
+				pluginCount, instrumentCount, progress.skippedPlugins);
+		else
+			snprintf(status, sizeof(status), "%u plugins, %u instruments", pluginCount, instrumentCount);
+	}
+	else
+		strcpy(status, "No plugins found");
+
+	drawVST3Header("Plugins:", status);
+	clearRect(VST3_LIST_X, VST3_LIST_Y, VST3_LIST_W, VST3_LIST_H);
+
+	if (vst3SelectedPlugin >= (int32_t)pluginCount)
+		vst3SelectedPlugin = -1;
+
+	setScrollBarEnd(SB_VST3_PLUGIN_SCROLL, pluginCount);
+
+	if (pluginCount == 0)
+	{
+		textOutClipX(116, 22, PAL_FORGRND, "No VST plugins found.", 608);
+		textOutClipX(116, 36, PAL_FORGRND, "Click Re-scan to search the standard VST folders.", 608);
+		drawVST3PluginDetails();
+		return;
+	}
+
+	const uint32_t firstPlugin = getScrollBarPos(SB_VST3_PLUGIN_SCROLL);
+	for (uint32_t i = 0; i < VST3_LIST_ROWS; i++)
+	{
+		const uint32_t pluginIndex = firstPlugin + i;
+		if (pluginIndex >= pluginCount)
+			break;
+
+		if (!vst3GetPluginInfo(pluginIndex, &info))
+			continue;
+
+		const uint16_t y = (uint16_t)(VST3_LIST_Y + (i * VST3_ROW_H));
+		if (vst3SelectedPlugin == (int32_t)pluginIndex)
+			fillRect(VST3_LIST_X, y, VST3_LIST_W, VST3_ROW_H - 1, PAL_BOXSLCT);
+
+		const char kindChar = (info.kind == VST3_PLUGIN_INSTRUMENT) ? 'I' :
+		                      ((info.kind == VST3_PLUGIN_EFFECT) ? 'E' : 'O');
+		const char *formatTag = (info.format == VST3_PLUGIN_FORMAT_VST2) ? "VST2" : "VST3";
+		snprintf(rowText, sizeof(rowText), "%c %s  %s", kindChar, formatTag, info.name);
+		textOutClipX(116, y, PAL_FORGRND, rowText, 424);
+
+		if (info.vendor[0] != '\0')
+			textOutClipX(428, y, PAL_FORGRND, info.vendor, 610);
+	}
+
+	drawVST3PluginDetails();
+}
+
+static void drawVST3ScanProgress(const vst3ScanProgress_t *progress)
+{
+	char text[96];
+
+	if (progress->skippedPlugins > 0)
+		snprintf(text, sizeof(text), "Scanning %u/%u, %u skipped",
+			progress->completedModules, progress->totalModules, progress->skippedPlugins);
+	else
+		snprintf(text, sizeof(text), "Scanning %u/%u", progress->completedModules, progress->totalModules);
+	drawVST3Header("Plugins:", text);
+
+	clearRect(VST3_LIST_X, VST3_LIST_Y, VST3_LIST_W, VST3_LIST_H);
+	clearRect(114, 136, 282, 36);
+
+	textOutClipX(116, 22, PAL_FORGRND, "Scanning VST folders...", 608);
+	snprintf(text, sizeof(text), "%u / %u modules", progress->completedModules, progress->totalModules);
+	textOutClipX(116, 36, PAL_FORGRND, text, 608);
+
+	const uint16_t barX = 116;
+	const uint16_t barY = 48;
+	const uint16_t barW = 480;
+	const uint16_t barH = 13;
+
+	drawFramework(barX, barY, barW, barH, FRAMEWORK_TYPE2);
+	if (progress->totalModules > 0)
+	{
+		const uint16_t fillW = (uint16_t)(((barW - 4) * progress->completedModules) / progress->totalModules);
+		if (fillW > 0)
+			fillRect(barX + 2, barY + 2, fillW, barH - 4, PAL_BOXSLCT);
+	}
+
+	textOutClipX(116, 68, PAL_FORGRND, progress->currentModulePath, 608);
+	textOutClipX(116, 86, PAL_FORGRND, "Each module is scanned in a separate process to protect against crashes.", 608);
+
+	textOutClipX(114, 139, PAL_FORGRND, "Scanning...", 390);
+	textOutClipX(114, 151, PAL_FORGRND, progress->currentModulePath, 390);
+}
+
+static void drawVST3ScanError(const char *error)
+{
+	drawVST3Header("Plugins:", "Scan failed");
+	clearRect(VST3_LIST_X, VST3_LIST_Y, VST3_LIST_W, VST3_LIST_H);
+	clearRect(114, 136, 282, 36);
+
+	textOutClipX(116, 22, PAL_FORGRND, "VST scan failed:", 608);
+	textOutClipX(116, 36, PAL_FORGRND, error, 608);
+	textOutClipX(116, 58, PAL_FORGRND, "Click Re-scan to try again.", 608);
+
+	textOutClipX(114, 139, PAL_FORGRND, "Scan failed.", 390);
+}
+
+void updateVST3ScanWindow(void)
+{
+	if (!ui.configScreenShown || editor.currConfigScreen != CONFIG_SCREEN_VST3)
+		return;
+
+	const int32_t state = SDL_AtomicGet(&vst3ScanState);
+	if (state == 1)
+	{
+		const uint32_t now = SDL_GetTicks();
+		if (now - vst3ProgressLastDrawTick < 100)
+			return;
+
+		vst3ProgressLastDrawTick = now;
+
+		vst3ScanProgress_t progress;
+		vst3GetScanProgress(&progress);
+		drawVST3ScanProgress(&progress);
+	}
+	else if (state == 2 && !vst3ScanCompletionDrawn)
+	{
+		vst3ScanCompletionDrawn = true;
+
+		if (!vst3ScanSucceeded)
+		{
+			char error[256];
+			if (vst3GetLastScanError(error, sizeof(error)) == 0)
+				strcpy(error, "VST scanning is not available in this build.");
+			drawVST3ScanError(error);
+		}
+		else
+		{
+			// open the report when the scan had to leave something out
+			vst3SkippedReportShown = vst3GetSkippedPluginCount() > 0;
+			vst3SelectedSkipped = -1;
+			setScrollBarPos(SB_VST3_PLUGIN_SCROLL, 0, DONT_TRIGGER_CALLBACK);
+			drawVST3PluginList();
+		}
+	}
+}
+
+void scrollVST3PluginListUp(void)
+{
+	scrollBarScrollUp(SB_VST3_PLUGIN_SCROLL, 1);
+}
+
+void scrollVST3PluginListDown(void)
+{
+	scrollBarScrollDown(SB_VST3_PLUGIN_SCROLL, 1);
+}
+
+void configToggleVST3SkippedReport(void)
+{
+	if (!ui.configScreenShown || editor.currConfigScreen != CONFIG_SCREEN_VST3 || vst3FxPanelShown)
+		return;
+
+	if (SDL_AtomicGet(&vst3ScanState) == 1)
+		return;
+
+	vst3SkippedReportShown = !vst3SkippedReportShown;
+	vst3SelectedSkipped = -1;
+	setScrollBarPos(SB_VST3_PLUGIN_SCROLL, 0, DONT_TRIGGER_CALLBACK);
+	drawVST3PluginList();
+}
+
+void sbVST3PluginSetPos(uint32_t pos)
+{
+	if (ui.configScreenShown && editor.currConfigScreen == CONFIG_SCREEN_VST3 &&
+		SDL_AtomicGet(&vst3ScanState) != 1)
+	{
+		drawVST3PluginList();
+	}
+
+	(void)pos;
+}
+
+bool testVST3PluginListMouseDown(void)
+{
+	if (!ui.configScreenShown || editor.currConfigScreen != CONFIG_SCREEN_VST3)
+		return false;
+
+	if (SDL_AtomicGet(&vst3ScanState) == 1)
+		return (mouse.x >= 110 && mouse.y <= 173);
+
+	if (mouse.x < VST3_LIST_X || mouse.x >= VST3_LIST_X + VST3_LIST_W ||
+		mouse.y < VST3_LIST_Y || mouse.y >= VST3_LIST_Y + (VST3_LIST_ROWS * VST3_ROW_H))
+	{
+		return false;
+	}
+
+	if (vst3SkippedReportShown)
+	{
+		const uint32_t skippedCount = vst3GetSkippedPluginCount();
+		const int32_t skippedIndex = (int32_t)(getScrollBarPos(SB_VST3_PLUGIN_SCROLL) +
+			(uint32_t)((mouse.y - VST3_LIST_Y) / VST3_ROW_H));
+
+		if (skippedIndex < (int32_t)skippedCount)
+		{
+			if (vst3SelectedSkipped != skippedIndex)
+			{
+				vst3SelectedSkipped = skippedIndex;
+				drawVST3PluginList();
+			}
+		}
+		else if (vst3SelectedSkipped >= 0)
+		{
+			vst3SelectedSkipped = -1;
+			drawVST3PluginList();
+		}
+
+		return true;
+	}
+
+	const uint32_t pluginCount = vst3GetPluginCount();
+	const int32_t pluginIndex = (int32_t)(getScrollBarPos(SB_VST3_PLUGIN_SCROLL) +
+		(uint32_t)((mouse.y - VST3_LIST_Y) / VST3_ROW_H));
+
+	if (pluginIndex >= (int32_t)pluginCount)
+	{
+		if (vst3SelectedPlugin >= 0)
+		{
+			vst3SelectedPlugin = -1;
+			drawVST3PluginList();
+		}
+
+		return true;
+	}
+
+	if (vst3SelectedPlugin != pluginIndex)
+	{
+		vst3SelectedPlugin = pluginIndex;
+		drawVST3PluginList();
+	}
+
+	return true;
+}
+
+// master VST3 effect chain panel, opened from the "Master FX..." push button
+#define VST3_FX_PANEL_X 112
+#define VST3_FX_PANEL_Y 16
+#define VST3_FX_PANEL_W 502
+#define VST3_FX_PANEL_H 156
+#define VST3_FX_ROW_H 11
+#define VST3_FX_CHAIN_X 116
+#define VST3_FX_CHAIN_Y 40
+#define VST3_FX_CHAIN_W 306
+#define VST3_FX_AVAIL_X 116
+#define VST3_FX_AVAIL_Y 100
+#define VST3_FX_AVAIL_ROWS 6
+
+static int32_t getVST3EffectPluginCount(void)
+{
+	const uint32_t count = vst3GetEffectPluginCount();
+	return count >= 0x7FFFFFFF ? 0x7FFFFFFF : (int32_t)count;
+}
+
+static void clampVST3EffectListScroll(void)
+{
+	const int32_t maxScroll = getVST3EffectPluginCount() - VST3_FX_AVAIL_ROWS;
+
+	if (maxScroll <= 0)
+		vst3FxAvailableScroll = 0;
+	else if (vst3FxAvailableScroll > maxScroll)
+		vst3FxAvailableScroll = maxScroll;
+
+	if (vst3FxAvailableScroll < 0)
+		vst3FxAvailableScroll = 0;
+}
+
+static void setVST3FxPanelButtonsVisible(bool visible)
+{
+	if (visible)
+	{
+		showPushButton(PB_CONFIG_VST3_FX_EDIT);
+		showPushButton(PB_CONFIG_VST3_FX_BYPASS);
+		showPushButton(PB_CONFIG_VST3_FX_REMOVE);
+		showPushButton(PB_CONFIG_VST3_FX_CLOSE);
+	}
+	else
+	{
+		hidePushButton(PB_CONFIG_VST3_FX_EDIT);
+		hidePushButton(PB_CONFIG_VST3_FX_BYPASS);
+		hidePushButton(PB_CONFIG_VST3_FX_REMOVE);
+		hidePushButton(PB_CONFIG_VST3_FX_CLOSE);
+	}
+}
+
+static void drawVST3FxPanel(void)
+{
+	char text[192];
+	char name[96];
+	int32_t pluginIndex;
+	bool bypassed;
+
+	clearRect(VST3_FX_PANEL_X + 1, VST3_FX_PANEL_Y + 1, VST3_FX_PANEL_W - 2, VST3_FX_PANEL_H - 2);
+	drawFramework(VST3_FX_PANEL_X, VST3_FX_PANEL_Y, VST3_FX_PANEL_W, VST3_FX_PANEL_H, FRAMEWORK_TYPE1);
+
+	textOutClipX(116, 19, PAL_FORGRND, "Master effects (processed on the final stereo mix):", 610);
+	textOutClipX(116, 31, PAL_FORGRND, "Chain (click a slot to select it):", 424);
+
+	const int32_t chainCount = vst3GetMasterEffectCount();
+	for (int32_t i = 0; i < MAX_VST3_MASTER_EFFECTS; i++)
+	{
+		const uint16_t y = (uint16_t)(VST3_FX_CHAIN_Y + (i * VST3_FX_ROW_H));
+
+		if (i == vst3FxSelected)
+			fillRect(VST3_FX_CHAIN_X, y, VST3_FX_CHAIN_W, VST3_FX_ROW_H - 1, PAL_BOXSLCT);
+
+		if (i < chainCount && vst3GetMasterEffectInfo(i, name, sizeof(name), &pluginIndex, &bypassed))
+			snprintf(text, sizeof(text), "%d. %s%s", i + 1, name, bypassed ? " (bypassed)" : "");
+		else
+			snprintf(text, sizeof(text), "%d. (empty)", i + 1);
+
+		textOutClipX(VST3_FX_CHAIN_X + 2, y, PAL_FORGRND, text, VST3_FX_CHAIN_X + VST3_FX_CHAIN_W - 2);
+	}
+
+	textOutClipX(VST3_FX_AVAIL_X, 88, PAL_FORGRND, "Available effects (click to add to the chain):", 600);
+
+	const int32_t effectCount = getVST3EffectPluginCount();
+	clampVST3EffectListScroll();
+
+	if (effectCount == 0)
+	{
+		textOutClipX(VST3_FX_AVAIL_X + 2, VST3_FX_AVAIL_Y, PAL_FORGRND, "No VST3 effect plugins found. Scan for plugins first.", 600);
+		setVST3FxPanelButtonsVisible(true); // the clear above wiped them
+		return;
+	}
+
+	for (int32_t i = 0; i < VST3_FX_AVAIL_ROWS; i++)
+	{
+		const int32_t index = vst3FxAvailableScroll + i;
+		if (index >= effectCount)
+			break;
+
+		if (!vst3GetEffectPluginLabel((uint32_t)index, name, sizeof(name)))
+			strcpy(name, "(Unavailable)");
+
+		const uint16_t y = (uint16_t)(VST3_FX_AVAIL_Y + (i * VST3_FX_ROW_H));
+		textOutClipX(VST3_FX_AVAIL_X + 2, y, PAL_FORGRND, name, 600);
+	}
+
+	if (effectCount > VST3_FX_AVAIL_ROWS)
+	{
+		const uint16_t barX = 606;
+		const uint16_t barY = VST3_FX_AVAIL_Y;
+		const uint16_t barH = VST3_FX_AVAIL_ROWS * VST3_FX_ROW_H;
+		const int32_t maxScroll = effectCount - VST3_FX_AVAIL_ROWS;
+
+		fillRect(barX, barY, 5, barH, PAL_DSKTOP1);
+
+		uint16_t thumbH = (uint16_t)((barH * VST3_FX_AVAIL_ROWS) / effectCount);
+		if (thumbH < 6)
+			thumbH = 6;
+
+		const uint16_t thumbY = (uint16_t)(barY + ((barH - thumbH) * vst3FxAvailableScroll) / maxScroll);
+		fillRect(barX + 1, thumbY, 3, thumbH, PAL_BUTTON2);
+	}
+
+	setVST3FxPanelButtonsVisible(true); // the clear above wiped them
+}
+
+static void closeVST3FxPanel(void)
+{
+	if (!vst3FxPanelShown)
+		return;
+
+	vst3FxPanelShown = false;
+	setVST3FxPanelButtonsVisible(false);
+
+	// repaint the whole plugin pane, the panel covered more than the list area
+	clearRect(110, 0, 530, 173);
+	drawFramework(110, 0, 530, 173, FRAMEWORK_TYPE1);
+	drawFramework(112, 16, 502, 120, FRAMEWORK_TYPE2);		showPushButton(PB_CONFIG_VST3_SCAN);
+		showPushButton(PB_CONFIG_VST3_FX);
+		showPushButton(PB_CONFIG_VST3_SKIPPED);
+		showScrollBar(SB_VST3_PLUGIN_SCROLL);
+
+		drawVST3PluginList();
+}
+
+void configShowVST3FxPanel(void)
+{
+	if (!ui.configScreenShown || editor.currConfigScreen != CONFIG_SCREEN_VST3)
+		return;
+
+	if (SDL_AtomicGet(&vst3ScanState) == 1)
+		return;
+
+	vst3FxPanelShown = true;
+	vst3FxSelected = -1;
+	vst3FxAvailableScroll = 0;
+	clampVST3EffectListScroll();
+
+	hidePushButton(PB_CONFIG_VST3_SCAN);
+	hidePushButton(PB_CONFIG_VST3_FX);
+	hidePushButton(PB_CONFIG_VST3_SKIPPED);
+	hideScrollBar(SB_VST3_PLUGIN_SCROLL);
+
+	drawVST3FxPanel();
+	setVST3FxPanelButtonsVisible(true);
+}
+
+void configVST3FxEditor(void)
+{
+	if (vst3FxSelected < 0 || vst3FxSelected >= vst3GetMasterEffectCount())
+	{
+		okBox(0, "VST effects", "Select a slot in the chain first.", NULL);
+		return;
+	}
+
+	if (!vst3OpenMasterEffectEditor(vst3FxSelected))
+		okBox(0, "VST effect", "Could not open the plugin's editor window.", NULL);
+}
+
+void configVST3FxBypass(void)
+{
+	int32_t pluginIndex;
+	bool bypassed;
+
+	if (vst3FxSelected < 0 || !vst3GetMasterEffectInfo(vst3FxSelected, NULL, 0, &pluginIndex, &bypassed))
+	{
+		okBox(0, "VST effects", "Select a slot in the chain first.", NULL);
+		return;
+	}
+
+	vst3SetMasterEffectBypass(vst3FxSelected, !bypassed);
+	drawVST3FxPanel();
+}
+
+void configVST3FxRemove(void)
+{
+	if (vst3FxSelected < 0 || vst3FxSelected >= vst3GetMasterEffectCount())
+	{
+		okBox(0, "VST effects", "Select a slot in the chain first.", NULL);
+		return;
+	}
+
+	if (vst3RemoveMasterEffect(vst3FxSelected))
+	{
+		if (vst3FxSelected >= vst3GetMasterEffectCount())
+			vst3FxSelected = vst3GetMasterEffectCount() - 1;
+
+		drawVST3FxPanel();
+	}
+}
+
+void configVST3FxClose(void)
+{
+	closeVST3FxPanel();
+}
+
+// panel button rectangles, handled by the regular push button code
+static bool mouseInVST3FxPanelButtons(void)
+{
+	for (int32_t i = PB_CONFIG_VST3_FX_EDIT; i <= PB_CONFIG_VST3_FX_CLOSE; i++)
+	{
+		const pushButton_t *b = &pushButtons[i];
+		if (!b->visible)
+			continue;
+
+		if (mouse.x >= b->x && mouse.x < b->x + b->w && mouse.y >= b->y && mouse.y < b->y + b->h)
+			return true;
+	}
+
+	return false;
+}
+
+bool testVST3FxPanelMouseDown(void)
+{
+	if (!ui.configScreenShown || editor.currConfigScreen != CONFIG_SCREEN_VST3 || !vst3FxPanelShown)
+		return false;
+
+	if (mouse.x < VST3_FX_PANEL_X || mouse.x >= VST3_FX_PANEL_X + VST3_FX_PANEL_W ||
+		mouse.y < VST3_FX_PANEL_Y || mouse.y >= VST3_FX_PANEL_Y + VST3_FX_PANEL_H)
+	{
+		closeVST3FxPanel();
+		return true;
+	}
+
+	// let the push button code handle the panel's own buttons
+	if (mouseInVST3FxPanelButtons())
+		return false;
+
+	// chain slots (selection)
+	if (mouse.x >= VST3_FX_CHAIN_X && mouse.x < VST3_FX_CHAIN_X + VST3_FX_CHAIN_W &&
+		mouse.y >= VST3_FX_CHAIN_Y && mouse.y < VST3_FX_CHAIN_Y + (MAX_VST3_MASTER_EFFECTS * VST3_FX_ROW_H))
+	{
+		vst3FxSelected = (mouse.y - VST3_FX_CHAIN_Y) / VST3_FX_ROW_H;
+		drawVST3FxPanel();
+		return true;
+	}
+
+	// available effect plugins (adding)
+	if (mouse.y >= VST3_FX_AVAIL_Y && mouse.y < VST3_FX_AVAIL_Y + (VST3_FX_AVAIL_ROWS * VST3_FX_ROW_H))
+	{
+		const int32_t row = (mouse.y - VST3_FX_AVAIL_Y) / VST3_FX_ROW_H;
+		const int32_t pluginIndex = vst3FxAvailableScroll + row;
+
+		if (pluginIndex >= 0 && pluginIndex < getVST3EffectPluginCount())
+		{
+			if (vst3GetMasterEffectCount() >= MAX_VST3_MASTER_EFFECTS)
+			{
+				okBox(0, "VST effects", "The master effect chain is full - remove an effect first.", NULL);
+			}
+			else if (vst3AddMasterEffect(pluginIndex))
+			{
+				vst3FxSelected = vst3GetMasterEffectCount() - 1;
+			}
+			else
+			{
+				char loadErr[256];
+				vst3GetLastLoadError(loadErr, sizeof(loadErr));
+
+				if (loadErr[0] != '\0')
+					okBox(0, "VST effect", loadErr, NULL);
+				else
+					okBox(0, "VST effect", "Could not load this effect plugin.", NULL);
+			}
+
+			drawVST3FxPanel();
+		}
+
+		return true;
+	}
+
+	return true; // clicks inside the panel never reach the widgets underneath
+}
+
+bool vst3FxPanelMouseWheel(bool directionUp)
+{
+	if (!ui.configScreenShown || editor.currConfigScreen != CONFIG_SCREEN_VST3 || !vst3FxPanelShown)
+		return false;
+
+	if (mouse.x < VST3_FX_PANEL_X || mouse.x >= VST3_FX_PANEL_X + VST3_FX_PANEL_W)
+		return false;
+
+	vst3FxAvailableScroll += directionUp ? -1 : 1;
+	clampVST3EffectListScroll();
+	drawVST3FxPanel();
+	return true;
+}
+
+static int32_t SDLCALL vst3ScanThread(void *unused)
+{
+	(void)unused;
+	vst3ScanSucceeded = vst3Scan();
+	SDL_AtomicSet(&vst3ScanState, 2);
+	return 0;
+}
+
+void configScanVST3Plugins(void)
+{
+	if (SDL_AtomicGet(&vst3ScanState) == 1)
+		return;
+
+	vst3SelectedPlugin = -1;
+	vst3SkippedReportShown = false;
+	vst3SelectedSkipped = -1;
+	vst3ScanCompletionDrawn = false;
+	vst3ProgressLastDrawTick = 0;
+	vst3ResetScanProgress();
+	SDL_AtomicSet(&vst3ScanState, 1);
+
+	if (ui.configScreenShown && editor.currConfigScreen == CONFIG_SCREEN_VST3)
+	{
+		vst3ScanProgress_t progress;
+		vst3GetScanProgress(&progress);
+		drawVST3ScanProgress(&progress);
+		vst3ProgressLastDrawTick = SDL_GetTicks();
+	}
+
+	SDL_Thread *thread = SDL_CreateThread(vst3ScanThread, "VST scan", NULL);
+	if (thread == NULL)
+	{
+		vst3ScanSucceeded = false;
+		SDL_AtomicSet(&vst3ScanState, 2);
+		return;
+	}
+
+	SDL_DetachThread(thread);
 }

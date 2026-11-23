@@ -13,6 +13,7 @@ enum
 	CONFIG_SCREEN_AUDIO,
 	CONFIG_SCREEN_LAYOUT,
 	CONFIG_SCREEN_MISCELLANEOUS,
+	CONFIG_SCREEN_VST3,
 #ifdef HAS_MIDI
 	CONFIG_SCREEN_MIDI_INPUT,
 #endif
@@ -277,5 +278,21 @@ void cbStretchImage(void);
 void sbAmp(uint32_t pos);
 void sbMasterVol(uint32_t pos);
 void sbMIDISens(uint32_t pos);
+void rbConfigVST3(void);
+void configScanVST3Plugins(void);
+void drawVST3PluginList(void);
+void configToggleVST3SkippedReport(void);
+void updateVST3ScanWindow(void);
+void scrollVST3PluginListUp(void);
+void scrollVST3PluginListDown(void);
+void sbVST3PluginSetPos(uint32_t pos);
+bool testVST3PluginListMouseDown(void);
+void configShowVST3FxPanel(void);
+void configVST3FxEditor(void);
+void configVST3FxBypass(void);
+void configVST3FxRemove(void);
+void configVST3FxClose(void);
+bool testVST3FxPanelMouseDown(void);
+bool vst3FxPanelMouseWheel(bool directionUp);
 
 extern config_t config;
